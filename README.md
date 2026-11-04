@@ -41,8 +41,22 @@ You should see real numbers (`"source": "gee"`). If you get an asset error for H
 ## 3. Load demo farms
 
 ```bash
-python -m app.seed --reset --verify   # 5 farms near Asankrangwa, screened with Earth Engine
+python -m app.seed --reset --verify   # 7 farms near Asankrangwa, screened with Earth Engine
 ```
+
+| Farm | Village | Risk level |
+| --- | --- | --- |
+| Adom Cocoa Farm | Asankrangwa | Low |
+| Nhyira Cocoa Farm | Asankrangwa | High |
+| Benso Cocoa Farm | Sefwi Wiawso Rd | Low |
+| Aseda Cocoa Farm | Samreboi | Low |
+| Asempa Cocoa Farm | Enchi Rd | Low |
+| Bodi Cocoa Farm | Bodi | Medium |
+| Dadieso Cocoa Farm | Dadieso Rd | High |
+
+Levels come from real Hansen/Sentinel-2 screening, not fixtures — a re-run or a Hansen asset
+update can shift a borderline farm, so re-check with `python -m app.seed --reset --verify` if
+you change `HANSEN_ASSET`.
 
 ## 4. Run the app (two Terminal tabs)
 
@@ -64,8 +78,12 @@ Open http://localhost:5173.
 2. **Capture (F2)** – click the polygon tool, draw a farm, fill farm + farmer name. Show live hectares, vertices,
    "valid geometry". Optional: turn Wi-Fi off, save → "saved on this device"; Wi-Fi on → it syncs.
 3. **Verify (F3)** – *Save & run satellite check* → result page with score, forest-loss overlay (red pixels),
-   NDVI change, protected areas, methodology.
-4. **Dashboard (F5)** – sign out, log in as *Brand admin* → KPIs, risk distribution, queue → *Export evidence* PDF.
+   NDVI change, protected areas, methodology. To show the full risk range without waiting on a fresh
+   draw, open one of the seeded farms instead: **Dadieso Cocoa Farm** (High) or **Nhyira Cocoa Farm**
+   (High) for a clear forest-loss flag, **Bodi Cocoa Farm** (Medium) for a borderline case, or any of
+   Adom / Benso / Aseda / Asempa (Low) for a clean pass.
+4. **Dashboard (F5)** – sign out, log in as *Brand admin* → KPIs, risk distribution, queue (all 7 demo
+   farms: 4 Low, 1 Medium, 2 High) → *Export evidence* PDF.
 
 ## Settings (`backend/.env`)
 

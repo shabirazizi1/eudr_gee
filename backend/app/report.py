@@ -121,11 +121,14 @@ def build_pdf(farm, verification) -> bytes:
     els.append(Spacer(1, 8))
 
     els.append(Paragraph("Evidence & methodology", h2))
-    rows = [["Data source", "Observation window", "Resolution"]] + [
-        [d["name"], d["window"], d["resolution"]] for d in res.get("datasets", [])]
+    cell = small.clone("cell", textColor=colors.black)
+    head = cell.clone("cellhead", fontName="Helvetica-Bold")
+    rows = [[Paragraph(h, head) for h in ("Data source", "Observation window", "Resolution")]] + [
+        [Paragraph(d["name"], cell), Paragraph(d["window"], cell), Paragraph(d["resolution"], cell)]
+        for d in res.get("datasets", [])]
     mt = Table(rows, colWidths=[80 * mm, 65 * mm, 25 * mm])
     mt.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eef2e8")),
-                            ("FONTSIZE", (0, 0), (-1, -1), 8),
+                            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
                             ("GRID", (0, 0), (-1, -1), 0.25, colors.lightgrey)]))
     els.append(mt)
     els.append(Spacer(1, 8))
