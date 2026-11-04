@@ -5,9 +5,11 @@ import Login from './pages/Login.jsx'
 import Capture from './pages/Capture.jsx'
 import Result from './pages/Result.jsx'
 import Dashboard from './pages/Dashboard.jsx'
+import Batches from './pages/Batches.jsx'
+import BatchDetail from './pages/BatchDetail.jsx'
 
 const ROLES = {
-  farmer: 'Farmer',
+  warehouse: 'Warehouse operator',
   agent: 'Field agent',
   admin: 'Brand admin',
 }
@@ -54,6 +56,7 @@ function Shell({ user, children }) {
         <NavLink to="/dashboard" className="nav-item">Overview</NavLink>
         <NavLink to="/capture" className="nav-item">Farm registry</NavLink>
         <NavLink to="/farms" className="nav-item">Satellite verification</NavLink>
+        <NavLink to="/batches" className="nav-item">Batches</NavLink>
         <div className="sidebar-foot">
           <div className="harvest">2026 / 27 harvest<br /><small>Ghana · Western Region</small></div>
           <button className="link-btn" onClick={logout}>Sign out</button>
@@ -96,6 +99,8 @@ export default function App() {
       <Route path="/farms" element={<Protected><Dashboard listOnly /></Protected>} />
       <Route path="/capture" element={<Protected><Capture /></Protected>} />
       <Route path="/farms/:id" element={<Protected><Result /></Protected>} />
+      <Route path="/batches" element={<Protected><Batches /></Protected>} />
+      <Route path="/batches/:id" element={<Protected><BatchDetail /></Protected>} />
       <Route path="*" element={<Navigate to={getUser() ? '/dashboard' : '/login'} replace />} />
     </Routes>
   )

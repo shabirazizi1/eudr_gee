@@ -56,7 +56,9 @@ export default function Dashboard({ listOnly = false }) {
             <div className="card pad"><small className="muted">Low satellite risk</small><b>{summary.low_risk_pct}%</b>
               <small className="muted">of {summary.screened} screened farms</small></div>
             <div className="card pad"><small className="muted">Needs attention</small><b>{summary.under_review + summary.not_screened}</b>
-              <small className="muted">{summary.under_review} under review · {summary.not_screened} not screened</small></div>
+              <small className="muted">
+                {summary.under_review} under review · {summary.not_screened} not screened · {summary.needs_field_audit} needs field audit
+              </small></div>
           </div>
           <div className="card pad">
             <div className="card-head tight"><b>Satellite risk distribution</b><small className="muted">{summary.screened} screened farms</small></div>
@@ -89,7 +91,10 @@ export default function Dashboard({ listOnly = false }) {
           <tbody>
             {shown.map((f) => (
               <tr key={f.id}>
-                <td><Link to={`/farms/${f.id}`}><b>{f.name}</b></Link><br /><small className="muted">{f.code} · {f.farmer_name}</small></td>
+                <td>
+                  <Link to={`/farms/${f.id}`}><b>{f.name}</b></Link><br /><small className="muted">{f.code} · {f.farmer_name}</small>
+                  {f.needs_field_audit && <div><span className="pill warn small">⚠ Needs field audit</span></div>}
+                </td>
                 <td>{f.area_ha} ha</td>
                 <td><RiskBadge level={f.risk_level} /></td>
                 <td>{f.risk_score ?? '–'}</td>

@@ -28,7 +28,10 @@ export default function Result() {
       <div className="page-head">
         <div>
           <h1>A clearer view of the farm.</h1>
-          <p className="muted">{farm.name} · {farm.code} · {farm.farmer_name} · {farm.village || farm.region}</p>
+          <p className="muted">
+            {farm.name} · {farm.code} · {farm.farmer_name} · {farm.village || farm.region}
+            {farm.needs_field_audit && <> · <span className="pill warn small">⚠ Needs field audit</span></>}
+          </p>
         </div>
         <div className="row">
           <button className="btn" onClick={run} disabled={busy}>{busy ? 'Screening… (10–40 s)' : v ? '↻ Re-run check' : 'Run satellite check'}</button>
@@ -82,6 +85,12 @@ export default function Result() {
               <div className="scale"><i style={{ left: `${v.score}%` }} /></div>
               <div className="row between small muted"><span>0 · Lower risk</span><span>100 · Higher risk</span></div>
               <ul className="facts">
+                <li><span>Capture method</span><b>{farm.capture_method === 'gps_walk' ? 'GPS walk' : 'Drawn on map'}</b></li>
+                <li><span>GPS accuracy</span><b>
+                  {farm.capture_method === 'gps_walk' && farm.gps_accuracy_m != null
+                    ? `±${farm.gps_accuracy_m.toFixed(1)} m avg${farm.flagged_points ? ` · ${farm.flagged_points} flagged` : ''}`
+                    : '–'}
+                </b></li>
                 <li><span>Forest-loss overlap</span><b>{v.loss_ha.toFixed(2)} ha</b></li>
                 <li><span>Forest cover in 2020</span><b>{v.forest_2020_ha} ha</b></li>
                 <li><span>Protected-area overlap</span><b>{v.protected_areas?.length ? v.protected_areas.join(', ') : 'None detected'}</b></li>

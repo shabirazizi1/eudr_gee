@@ -28,6 +28,10 @@ export const api = {
   createFarm: (body) => request('/farms', { method: 'POST', body: JSON.stringify(body) }),
   verify: (id) => request(`/farms/${id}/verify`, { method: 'POST' }),
   reportUrl: (id) => `/api/farms/${id}/report.pdf`,
+  batches: () => request('/batches'),
+  batch: (id) => request(`/batches/${id}`),
+  createBatch: (body) => request('/batches', { method: 'POST', body: JSON.stringify(body) }),
+  batchReportUrl: (id) => `/api/batches/${id}/report.pdf`,
 }
 
 // ---- offline outbox -------------------------------------------------------

@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:phone": "vite --host --mode phone",
     "build": "vite build",
     "preview": "vite preview"
   },
@@ -14,11 +15,13 @@
     "@turf/kinks": "^7.1.0",
     "@turf/length": "^7.1.0",
     "leaflet": "^1.9.4",
+    "qrcode": "^1.5.4",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-router-dom": "^6.26.0"
   },
   "devDependencies": {
+    "@vitejs/plugin-basic-ssl": "^1.2.0",
     "@vitejs/plugin-react": "^4.3.1",
     "vite": "^5.4.0"
   }

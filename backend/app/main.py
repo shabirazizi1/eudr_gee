@@ -11,8 +11,8 @@ from sqlmodel import Session, select
 
 from . import config, geo, gee_service, scoring
 from .db import get_session, init_db
-from .models import Farm, Verification
-from .report import build_pdf
+from .models import Batch, BatchContribution, Farm, Verification
+from .report import build_batch_pdf, build_pdf
 
 app = FastAPI(title="eudr_gee – Deforestation-free traceability API")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -33,11 +33,34 @@ class FarmCreate(BaseModel):
     crop: str = "Cocoa"
     captured_by: str = ""
     geometry: dict  # GeoJSON Polygon
+    capture_method: str = "drawn"  # "gps_walk" or "drawn"
+    gps_accuracy_m: Optional[float] = None
+    flagged_points: int = 0
+
+
+class BatchContributionIn(BaseModel):
+    farm_id: int
+    bags: int
+    kg_per_bag: float = 64.0
+
+
+class BatchCreate(BaseModel):
+    buyer: str = "Chocolaterie Vandermeer, Ghent, Belgium"
+    created_by: str = ""
+    contributions: list[BatchContributionIn]
+
+
+def needs_field_audit(farm: Farm) -> bool:
+    """HLR-01: audit required if drawn on a map, or walked with avg accuracy worse than 10 m."""
+    if farm.capture_method == "gps_walk":
+        return farm.gps_accuracy_m is None or farm.gps_accuracy_m > 10
+    return True
 
 
 def farm_out(farm: Farm, latest: Optional[Verification] = None) -> dict:
     d = farm.model_dump()
     d["geometry"] = json.loads(farm.geometry)
+    d["needs_field_audit"] = needs_field_audit(farm)
     if latest:
         d["verification"] = {
             "run_id": latest.run_id,
@@ -61,6 +84,48 @@ def next_code(session: Session) -> str:
     farms = session.exec(select(Farm.code)).all()
     nums = [int(c.split("-")[1]) for c in farms if c.startswith("GH-")]
     return f"GH-{(max(nums) + 1) if nums else 241:04d}"
+
+
+def next_batch_code(session: Session) -> str:
+    year = datetime.now(timezone.utc).year
+    prefix = f"BATCH-{year}-"
+    codes = session.exec(select(Batch.code)).all()
+    nums = [int(c.split("-")[-1]) for c in codes if c.startswith(prefix)]
+    return f"{prefix}{(max(nums) + 1) if nums else 1:03d}"
+
+
+def batch_out(session: Session, batch: Batch) -> dict:
+    contribs = session.exec(
+        select(BatchContribution).where(BatchContribution.batch_id == batch.id)
+    ).all()
+    items = []
+    total_bags = total_kg = total_area = 0.0
+    for c in contribs:
+        farm = session.get(Farm, c.farm_id)
+        kg = c.bags * c.kg_per_bag
+        total_bags += c.bags
+        total_kg += kg
+        total_area += farm.area_ha if farm else 0.0
+        items.append({
+            "bags": c.bags,
+            "kg_per_bag": c.kg_per_bag,
+            "kg": kg,
+            "farm": farm_out(farm, latest_verification(session, farm.id)) if farm else None,
+        })
+    return {
+        "id": batch.id,
+        "code": batch.code,
+        "buyer": batch.buyer,
+        "created_at": batch.created_at.isoformat(),
+        "created_by": batch.created_by,
+        "contributions": items,
+        "totals": {
+            "farms": len(items),
+            "bags": int(total_bags),
+            "kg": round(total_kg, 1),
+            "area_ha": round(total_area, 2),
+        },
+    }
 
 
 # ---------------------------------------------------------------- routes
@@ -95,6 +160,9 @@ def create_farm(body: FarmCreate, session: Session = Depends(get_session)):
         area_ha=round(area, 2),
         perimeter_m=round(geo.perimeter_m(body.geometry), 1),
         vertices=geo.vertex_count(body.geometry),
+        capture_method=body.capture_method,
+        gps_accuracy_m=body.gps_accuracy_m,
+        flagged_points=body.flagged_points,
     )
     session.add(farm)
     session.commit()
@@ -170,4 +238,60 @@ def summary(session: Session = Depends(get_session)):
         "distribution": dist,
         "under_review": sum(1 for f in farms if f.status == "Under review"),
         "not_screened": sum(1 for f in farms if f.status == "Not screened"),
+        "needs_field_audit": sum(1 for f in farms if needs_field_audit(f)),
     }
+
+
+# ---------------------------------------------------------------- batches (HLR-02 / DEL-03 / DEL-06)
+
+@app.get("/api/batches")
+def list_batches(session: Session = Depends(get_session)):
+    batches = session.exec(select(Batch).order_by(Batch.created_at.desc())).all()
+    return [batch_out(session, b) for b in batches]
+
+
+@app.post("/api/batches", status_code=201)
+def create_batch(body: BatchCreate, session: Session = Depends(get_session)):
+    if not body.contributions:
+        raise HTTPException(422, detail=["A batch needs at least one farm contribution."])
+    errors = []
+    for c in body.contributions:
+        farm = session.get(Farm, c.farm_id)
+        if not farm:
+            errors.append(f"Farm {c.farm_id} not found.")
+        elif farm.status != "Verified":
+            errors.append(f"{farm.name} is not Verified and cannot be added to a batch.")
+        elif c.bags <= 0:
+            errors.append(f"{farm.name}: bag count must be positive.")
+    if errors:
+        raise HTTPException(422, detail=errors)
+
+    batch = Batch(code=next_batch_code(session), buyer=body.buyer.strip() or Batch().buyer,
+                  created_by=body.created_by)
+    session.add(batch)
+    session.commit()
+    session.refresh(batch)
+    for c in body.contributions:
+        session.add(BatchContribution(batch_id=batch.id, farm_id=c.farm_id,
+                                       bags=c.bags, kg_per_bag=c.kg_per_bag))
+    session.commit()
+    return batch_out(session, batch)
+
+
+@app.get("/api/batches/{batch_id}")
+def get_batch(batch_id: int, session: Session = Depends(get_session)):
+    batch = session.get(Batch, batch_id)
+    if not batch:
+        raise HTTPException(404, "Batch not found")
+    return batch_out(session, batch)
+
+
+@app.get("/api/batches/{batch_id}/report.pdf")
+def batch_report(batch_id: int, session: Session = Depends(get_session)):
+    batch = session.get(Batch, batch_id)
+    if not batch:
+        raise HTTPException(404, "Batch not found")
+    data = batch_out(session, batch)
+    pdf = build_batch_pdf(batch, data)
+    return Response(pdf, media_type="application/pdf", headers={
+        "Content-Disposition": f'attachment; filename="shipment_{batch.code}.pdf"'})

@@ -2,8 +2,8 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 // F1 (simplified): pick a role and enter a tailored workspace. No real auth in the MVP.
-const DEFAULT_NAMES = { farmer: 'Ama Mensah', agent: 'Nadia Owusu', admin: 'Nadia Owusu' }
-const HOME = { farmer: '/dashboard', agent: '/capture', admin: '/dashboard' }
+const DEFAULT_NAMES = { warehouse: 'Kofi Mensah', agent: 'Nadia Owusu', admin: 'Nadia Owusu' }
+const HOME = { warehouse: '/batches', agent: '/capture', admin: '/dashboard' }
 
 export default function Login({ roles }) {
   const nav = useNavigate()
@@ -38,7 +38,7 @@ export default function Login({ roles }) {
               className={`role ${role === key ? 'active' : ''}`}
               onClick={() => setRole(key)}>
               <b>{label}</b>
-              <small>{key === 'farmer' ? 'Manage my farm' : key === 'agent' ? 'Map & onboard' : 'Monitor sourcing'}</small>
+              <small>{key === 'warehouse' ? 'Prepare shipments' : key === 'agent' ? 'Map & onboard' : 'Monitor sourcing'}</small>
             </button>
           ))}
         </div>
