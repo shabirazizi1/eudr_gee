@@ -61,7 +61,13 @@ export default function Result() {
           <div className="card-head"><b>Forest change screening</b>
             {v?.loss_tiles && <span className="pill"><span className="sw red" /> Tree-cover loss after 2020</span>}
           </div>
-          <FarmMap geometry={farm.geometry} label={`${farm.name} · ${farm.area_ha} ha`} overlayUrl={v?.loss_tiles} height={400} />
+          <FarmMap
+            geometry={farm.geometry}
+            label={`${farm.name} · ${farm.area_ha} ha`}
+            overlayUrl={v?.loss_tiles}
+            boundaryStyle={{ color: '#ffe034', weight: 3, fillColor: '#ffe034', fillOpacity: 0.08 }}
+            height={400}
+          />
           <div className="card-foot small muted row between">
             <span>{v?.loss_tiles ? 'Red pixels = Hansen tree-cover loss after the cutoff' : 'Farm boundary'}</span>
             <span>Cut-off: 31 Dec 2020</span>

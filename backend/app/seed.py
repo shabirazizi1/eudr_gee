@@ -22,6 +22,10 @@ DEMO = [
     ("Benso Cocoa Farm", "Akua Boateng", "Sefwi Wiawso Rd", (5.7950, -2.4520), 100, 5),
     ("Aseda Cocoa Farm", "Kofi Adjei", "Samreboi", (5.5720, -2.5830), 160, 8),
     ("Asempa Cocoa Farm", "Esi Ofori", "Enchi Rd", (5.8320, -2.4610), 130, 6),
+    # GEE-verified real Hansen tree-cover loss after the cutoff (found via Earth Engine
+    # grid screening of the Asankrangwa-Wiawso cocoa belt) -- gives Medium/High demo examples.
+    ("Bodi Cocoa Farm", "Yaw Owusu", "Bodi", (5.7740, -2.4280), 130, 7),  # Medium: 0.18 ha loss, 2021
+    ("Dadieso Cocoa Farm", "Abena Darko", "Dadieso Rd", (5.7980, -2.4160), 130, 6),  # High: 0.65 ha loss, 2021-23
 ]
 
 

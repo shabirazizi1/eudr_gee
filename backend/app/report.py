@@ -7,7 +7,10 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import mm
+from reportlab.platypus import Image as RLImage
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+
+from . import gee_service
 
 GREEN = colors.HexColor("#2f5d34")
 LEVEL_COLORS = {"Low": "#2f7d3a", "Medium": "#b8860b", "High": "#b23b2e"}
@@ -26,6 +29,25 @@ def _boundary_drawing(geojson: dict, size=60 * mm) -> Drawing:
     d.add(Rect(0, 0, size, size, fillColor=colors.HexColor("#eef2e8"), strokeColor=None))
     d.add(Polygon(pts, fillColor=colors.HexColor("#b9d7a8"), strokeColor=GREEN, strokeWidth=1.5))
     return d
+
+
+def _swatch(hex_color: str, size=8) -> Drawing:
+    d = Drawing(size, size)
+    d.add(Rect(0, 0, size, size, fillColor=colors.HexColor(hex_color), strokeColor=colors.grey, strokeWidth=0.5))
+    return d
+
+
+def _map_flowable(geo: dict, size=66 * mm):
+    """Real GEE satellite map when available, else the plain polygon drawing."""
+    try:
+        png = gee_service.satellite_thumbnail(geo)
+        img = RLImage(io.BytesIO(png))
+        ratio = img.imageHeight / img.imageWidth
+        img.drawWidth = size
+        img.drawHeight = size * ratio
+        return img, True
+    except Exception:
+        return _boundary_drawing(geo, size=size), False
 
 
 def build_pdf(farm, verification) -> bytes:
@@ -72,7 +94,19 @@ def build_pdf(farm, verification) -> bytes:
     t.setStyle(TableStyle([("FONTSIZE", (0, 0), (-1, -1), 9),
                            ("TEXTCOLOR", (0, 0), (0, -1), colors.grey),
                            ("BOTTOMPADDING", (0, 0), (-1, -1), 4)]))
-    els.append(Table([[_boundary_drawing(geo), t]], colWidths=[66 * mm, 104 * mm]))
+    map_img, is_real_map = _map_flowable(geo)
+    els.append(Table([[map_img, t]], colWidths=[66 * mm, 104 * mm]))
+    if is_real_map:
+        legend = Table([[
+            _swatch("#ffe034"), Paragraph("Farm boundary", small),
+            _swatch("#e0453a"), Paragraph("Tree-cover loss after 2020", small),
+            Paragraph(f"Source: Sentinel-2 / Hansen GFC (Google Earth Engine) · "
+                      f"{verification.created_at:%d %b %Y}", small),
+        ]], colWidths=[10, 32 * mm, 10, 48 * mm, 70 * mm])
+        legend.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                                    ("LEFTPADDING", (0, 0), (-1, -1), 2),
+                                    ("RIGHTPADDING", (0, 0), (-1, -1), 2)]))
+        els.append(legend)
     els.append(Spacer(1, 8))
 
     els.append(Paragraph("Score breakdown", h2))

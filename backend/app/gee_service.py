@@ -9,6 +9,9 @@ import hashlib
 import random
 from datetime import date, timedelta
 
+import certifi
+import requests
+
 from . import config
 
 try:
@@ -101,9 +104,10 @@ def gee_screen(geojson: dict) -> dict:
         for g in (hansen_stats.get("by_year") or [])
     }
 
-    # Map tiles of post-cutoff loss so the frontend can overlay them
+    # Map tiles of post-cutoff loss so the frontend can overlay them, clipped to the
+    # farm + a 500 m buffer so the overlay stays focused on the farm, not the whole tile.
     try:
-        mapid = post_loss.selfMask().getMapId({"palette": ["e0453a"]})
+        mapid = post_loss.selfMask().clip(geom.buffer(500)).getMapId({"palette": ["e0453a"]})
         loss_tiles = mapid["tile_fetcher"].url_format
     except Exception:
         loss_tiles = None
@@ -128,6 +132,40 @@ def gee_screen(geojson: dict) -> dict:
             {"name": "WDPA protected areas", "window": "Current snapshot", "resolution": "Vector"},
         ],
     }
+
+
+def satellite_thumbnail(geojson: dict) -> bytes:
+    """A PNG map for the PDF report: cloud-free Sentinel-2 true-colour composite
+    (last 12 months) around the farm, with post-2020 Hansen loss in red and the
+    farm boundary painted in yellow. Raises on any failure -- the caller falls
+    back to a plain boundary drawing.
+    """
+    _init()
+    geom = ee.Geometry(geojson)
+    buffered = geom.buffer(300)
+    region = buffered.bounds()
+
+    today = date.today()
+    start = (today - timedelta(days=365)).isoformat()
+    s2 = _s2_collection(buffered, start, today.isoformat())
+    if s2.size().getInfo() == 0:
+        raise RuntimeError("No cloud-free Sentinel-2 imagery in the last 12 months")
+    rgb = s2.median().select(["B4", "B3", "B2"]).visualize(min=0, max=3000, gamma=1.3)
+
+    cutoff = config.CUTOFF_YEAR - 2000
+    hansen = ee.Image(config.HANSEN_ASSET)
+    post_loss = hansen.select("lossyear").unmask(0).gt(cutoff)
+    loss_rgb = post_loss.selfMask().clip(geom.buffer(500)).visualize(palette=["e0453a"])
+
+    boundary = ee.Image().byte().paint(ee.FeatureCollection([ee.Feature(geom)]), 1, 3)
+    boundary_rgb = boundary.selfMask().visualize(min=1, max=1, palette=["ffe034"])
+
+    composite = rgb.blend(loss_rgb).blend(boundary_rgb)
+    url = composite.getThumbURL({"region": region, "dimensions": 600, "format": "png"})
+
+    resp = requests.get(url, timeout=30, verify=certifi.where())
+    resp.raise_for_status()
+    return resp.content
 
 
 # ---------------------------------------------------------------- mock

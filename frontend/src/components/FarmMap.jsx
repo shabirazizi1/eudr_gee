@@ -9,7 +9,7 @@ const STYLE = { color: '#d9f2b4', weight: 2.5, fillColor: '#d9f2b4', fillOpacity
  * Satellite map. In edit mode the user draws ONE polygon; onChange gets GeoJSON (or null).
  * In view mode it shows `geometry` and an optional `overlayUrl` tile layer (GEE loss pixels).
  */
-export default function FarmMap({ editable = false, geometry, onChange, overlayUrl, label, height = 460 }) {
+export default function FarmMap({ editable = false, geometry, onChange, overlayUrl, label, boundaryStyle, height = 460 }) {
   const el = useRef(null)
   const mapRef = useRef(null)
   const layerRef = useRef(null)
@@ -57,14 +57,18 @@ export default function FarmMap({ editable = false, geometry, onChange, overlayU
       if (current === JSON.stringify(geometry.coordinates)) return
       map.removeLayer(layerRef.current)
     }
-    const layer = L.geoJSON(geometry, { style: STYLE }).getLayers()[0]
+    const layer = L.geoJSON(geometry, { style: boundaryStyle || STYLE }).getLayers()[0]
     layer.addTo(map)
-    if (label) layer.bindTooltip(label, { permanent: true, direction: 'center', className: 'map-label' })
+    if (label) {
+      layer.bindTooltip(label, {
+        permanent: true, direction: 'top', offset: [0, -6], className: 'map-label',
+      })
+    }
     if (editable) layer.on('pm:edit', () => onChange?.(layer.toGeoJSON().geometry))
     layerRef.current = layer
     map.fitBounds(layer.getBounds(), { padding: [40, 40] })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [geometry, label])
+  }, [geometry, label, boundaryStyle])
 
   useEffect(() => {
     const map = mapRef.current
