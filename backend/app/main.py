@@ -1,5 +1,6 @@
 import json
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -14,16 +15,18 @@ from .db import get_session, init_db
 from .models import Bag, Batch, BatchContribution, Farm, Review, Verification
 from .report import build_bag_labels_pdf, build_batch_pdf, build_pdf
 
-app = FastAPI(title="eudr_gee – Deforestation-free traceability API")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    yield
+
+
+app = FastAPI(title="eudr_gee – Deforestation-free traceability API", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 REVIEW_REASONS = ["Cloud cover", "Natural clearing", "Replanting of existing cocoa", "Boundary error", "Other"]
 BATCHABLE_STATUSES = ("Verified", "Verified (manual review)")
-
-
-@app.on_event("startup")
-def on_startup():
-    init_db()
 
 
 # ---------------------------------------------------------------- schemas
