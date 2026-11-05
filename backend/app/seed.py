@@ -13,13 +13,15 @@ from sqlmodel import Session, SQLModel, select
 
 from . import geo
 from .db import engine, init_db
+from .main import create_bags  # reuse the same bag-numbering logic the API uses
 from .models import Batch, BatchContribution, Farm
 
 DEMO = [
     # name, farmer, village, centre (lat, lon), radius (m), vertices, capture_method, gps_accuracy_m, flagged_points
     # Most farms are GPS-walked with realistic accuracy; Benso was drawn on a map (no field GPS) and
     # Aseda's walk averaged a weak 13 m fix -- those two are the only ones needing a field audit.
-    ("Adom Cocoa Farm", "Ama Mensah", "Asankrangwa", (5.8085, -2.4335), 125, 6, "gps_walk", 4.8, 0),
+    # GEE-verified vegetated spot near Asankrangwa: NDVI 0.69 -> 0.72, zero post-2020 loss -- Low risk
+    ("Adom Cocoa Farm", "Ama Mensah", "Asankrangwa", (5.8500, -2.4100), 125, 6, "gps_walk", 4.8, 0),
     ("Nhyira Cocoa Farm", "Afia Konadu", "Asankrangwa", (5.8215, -2.4180), 140, 7, "gps_walk", 6.2, 0),
     ("Benso Cocoa Farm", "Akua Boateng", "Sefwi Wiawso Rd", (5.7950, -2.4520), 100, 5, "drawn", None, 0),
     ("Aseda Cocoa Farm", "Kofi Adjei", "Samreboi", (5.5720, -2.5830), 160, 8, "gps_walk", 13.0, 2),
@@ -92,12 +94,19 @@ def main():
                     s.add(batch)
                     s.commit()
                     s.refresh(batch)
+                    total_bags = 0
                     for f in low_farms:
                         bags = BATCH_BAGS.get(f.name, 15)
-                        s.add(BatchContribution(batch_id=batch.id, farm_id=f.id, bags=bags, kg_per_bag=64.0))
+                        contribution = BatchContribution(batch_id=batch.id, farm_id=f.id,
+                                                          bags=bags, kg_per_bag=64.0)
+                        s.add(contribution)
+                        s.commit()
+                        s.refresh(contribution)
+                        create_bags(s, batch, contribution, f)
+                        total_bags += bags
                     s.commit()
-                    print(f"Seeded {batch.code}: {len(low_farms)} farms, "
-                          f"{sum(BATCH_BAGS.get(f.name, 15) for f in low_farms)} bags.")
+                    print(f"Seeded {batch.code}: {len(low_farms)} farms, {total_bags} bags "
+                          f"({total_bags} bag labels).")
 
 
 if __name__ == "__main__":

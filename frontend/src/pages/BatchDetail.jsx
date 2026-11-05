@@ -38,7 +38,10 @@ export default function BatchDetail() {
             {batch.created_by ? ` by ${batch.created_by}` : ''}
           </p>
         </div>
-        <a className="btn primary" href={api.batchReportUrl(batch.id)}>⤓ Export shipment compliance package</a>
+        <div className="row gap">
+          <a className="btn" href={api.bagLabelsUrl(batch.id)}>🏷 Print bag labels</a>
+          <a className="btn primary" href={api.batchReportUrl(batch.id)}>⤓ Export shipment compliance package</a>
+        </div>
       </div>
 
       <div className="kpis">
@@ -64,23 +67,26 @@ export default function BatchDetail() {
 
       <section className="card">
         <div className="card-head"><b>Contributing farms</b></div>
-        <table className="table">
+        <table className="table contrib-table">
           <thead><tr><th>Farm / farmer</th><th>Risk</th><th>Area</th><th>Bags</th><th>Weight</th></tr></thead>
           <tbody>
             {batch.contributions.map((c) => (
               <tr key={c.farm?.id ?? Math.random()}>
-                <td>
+                <td data-label="Farm">
                   {c.farm ? (
                     <>
                       <Link to={`/farms/${c.farm.id}`}><b>{c.farm.name}</b></Link><br />
                       <small className="muted">{c.farm.code} · {c.farm.farmer_name}</small>
+                      {c.farm.status === 'Verified (manual review)' && (
+                        <div><span className="pill ok small">✓ Manually cleared</span></div>
+                      )}
                     </>
                   ) : <span className="muted">Farm removed</span>}
                 </td>
-                <td>{c.farm ? <RiskBadge level={c.farm.risk_level} /> : '–'}</td>
-                <td>{c.farm ? `${c.farm.area_ha} ha` : '–'}</td>
-                <td>{c.bags}</td>
-                <td>{c.kg.toFixed(0)} kg</td>
+                <td data-label="Risk">{c.farm ? <RiskBadge level={c.farm.risk_level} /> : '–'}</td>
+                <td data-label="Area">{c.farm ? `${c.farm.area_ha} ha` : '–'}</td>
+                <td data-label="Bags">{c.bags}</td>
+                <td data-label="Weight">{c.kg.toFixed(0)} kg</td>
               </tr>
             ))}
           </tbody>

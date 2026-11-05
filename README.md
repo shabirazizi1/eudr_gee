@@ -4,7 +4,11 @@ Demo features:
 - **F2 Farm registry & GPS boundary capture** – draw a farm on a satellite map, or **walk the boundary** with GPS (live
   accuracy-checked point capture, charter target < 10 m), live area/perimeter/vertex checks, offline drafts that sync later.
 - **F3 GEE satellite verification** – screens the polygon with Google Earth Engine (Hansen forest loss after 31 Dec 2020, Sentinel-2 NDVI, WDPA protected areas) and returns a 0–100 risk score.
+- **Manual review** – a Brand admin can clear a false positive or confirm and exclude a farm; cleared farms can still join a batch, excluded ones can't.
+- **HLR-02 Shipment batches** – bundle verified farms into a traceable batch for a buyer, with a shipment compliance PDF and a per-batch QR code.
+- **Bag-level QR traceability** – each batch prints bag labels (QR + bag ID); scanning one opens a public, no-login page with a deforestation-free verdict for that bag.
 - **F5 Evidence dashboard** – portfolio KPIs, risk distribution, review queue, one-click PDF evidence report.
+- **Mobile-friendly field UI** – the capture flow, dashboards and tables adapt to a phone screen; installable as a home-screen app.
 - F1 (simplified) – role picker login (no real auth).
 
 ```
@@ -45,26 +49,27 @@ You should see real numbers (`"source": "gee"`). If you get an asset error for H
 python -m app.seed --reset --verify   # 7 farms near Asankrangwa, screened with Earth Engine
 ```
 
-| Farm | Village | Risk level |
-| --- | --- | --- |
-| Adom Cocoa Farm | Asankrangwa | Low |
-| Nhyira Cocoa Farm | Asankrangwa | High |
-| Benso Cocoa Farm | Sefwi Wiawso Rd | Low |
-| Aseda Cocoa Farm | Samreboi | Low |
-| Asempa Cocoa Farm | Enchi Rd | Low |
-| Bodi Cocoa Farm | Bodi | Medium |
-| Dadieso Cocoa Farm | Dadieso Rd | High |
+| Farm | Village | Risk level | Status | Needs field audit |
+| --- | --- | --- | --- | --- |
+| Adom Cocoa Farm | Asankrangwa | Low | Verified | – |
+| Nhyira Cocoa Farm | Asankrangwa | High | Under review | – |
+| Benso Cocoa Farm | Sefwi Wiawso Rd | Low | Verified | ✓ (drawn, not walked) |
+| Aseda Cocoa Farm | Samreboi | Low (protected-area overlap) | Under review | ✓ (±13 m walk) |
+| Asempa Cocoa Farm | Enchi Rd | Low | Verified | – |
+| Bodi Cocoa Farm | Bodi | Medium | Under review | – |
+| Dadieso Cocoa Farm | Dadieso Rd | High | Under review | – |
 
 Levels come from real Hansen/Sentinel-2 screening, not fixtures — a re-run or a Hansen asset
 update can shift a borderline farm, so re-check with `python -m app.seed --reset --verify` if
-you change `HANSEN_ASSET`.
+you change `HANSEN_ASSET`. The seed also bundles the three clean **Verified** farms (Adom, Benso,
+Asempa) into **BATCH-2026-001** with 48 bags, ready for the batch/bag part of the demo.
 
 ## 4. Run the app (two Terminal tabs)
 
 ```bash
 # Tab 1 – API on http://localhost:8000  (docs at /docs)
 cd eudr_gee/backend && source .venv/bin/activate
-uvicorn app.main:app --reload
+uvicorn app.main:app --reload --reload-dir app
 
 # Tab 2 – web app on http://localhost:5173
 cd eudr_gee/frontend
@@ -92,20 +97,59 @@ npm run dev:phone   # vite --host --mode phone (adds @vitejs/plugin-basic-ssl)
    "Show Details → visit this website"; Chrome: "Advanced → Proceed to … (unsafe)").
 3. Go to **Capture → Walk the boundary**, allow the location permission prompt, and walk the plot.
 
-## 5. Demo script (≈5 min)
+## 5. Demo script (≈6 min)
 
-1. **Login** – pick *Field agent* → sign in.
-2. **Capture (F2)** – click the polygon tool, draw a farm, fill farm + farmer name. Show live hectares, vertices,
-   "valid geometry". Optional: turn Wi-Fi off, save → "saved on this device"; Wi-Fi on → it syncs. On a phone
-   (see §4b), switch to **Walk the boundary** instead and show live GPS accuracy, point-by-point capture, and the
-   amber/red accuracy warnings.
-3. **Verify (F3)** – *Save & run satellite check* → result page with score, forest-loss overlay (red pixels),
-   NDVI change, protected areas, methodology. To show the full risk range without waiting on a fresh
-   draw, open one of the seeded farms instead: **Dadieso Cocoa Farm** (High) or **Nhyira Cocoa Farm**
-   (High) for a clear forest-loss flag, **Bodi Cocoa Farm** (Medium) for a borderline case, or any of
-   Adom / Benso / Aseda / Asempa (Low) for a clean pass.
-4. **Dashboard (F5)** – sign out, log in as *Brand admin* → KPIs, risk distribution, queue (all 7 demo
-   farms: 4 Low, 1 Medium, 2 High, all drawn so all flagged **Needs field audit**) → *Export evidence* PDF.
+Run `python -m app.seed --reset --verify` right before recording so the state matches §3 exactly.
+Keep both the laptop browser and a phone (see §4b) within reach for the mobile beat.
+
+**0:00 – Login (20 s).** Open the app. *"This is a deforestation-free traceability platform for a
+cocoa cooperative — login here is a simplified role picker, there's no real auth in this MVP."*
+Pick **Field agent** → sign in.
+
+**0:20 – Capture, draw mode (60 s).** Go to **Farm registry**. *"A field agent registers a farm by
+mapping its boundary two ways."* Click the polygon tool, draw a rough plot on the satellite map,
+fill in a farm + farmer name. *"Area, perimeter and vertex count update live, and it checks the
+polygon doesn't cross itself."* Toggle to **Walk the boundary** to show the mode, but don't walk it
+live on a laptop (no GPS) — say *"in the field this averages a 3-second GPS sample per point and
+flags anything worse than 10 m accuracy; here's what that looks like"* and switch to the phone (§4b)
+for 15–20 s to show a real point being added with its accuracy reading. *"If there's no signal,
+it saves to the device and syncs automatically once you're back online."*
+
+**1:30 – Verify (F3) (45 s).** Open a pre-screened farm instead of waiting on a fresh one.
+Open **Nhyira Cocoa Farm** → *"this one actually has real Hansen tree-cover loss after our 2020
+cutoff — not a mock."* Point out the score, the red loss overlay on the map, the NDVI change, and
+the methodology table at the bottom. *"Everything here is live Google Earth Engine data, not a
+fixture — the badge up top would say MOCK if it ever had to fall back."*
+
+**2:15 – Review / clear (60 s).** Sign out, log back in as **Brand admin**. Open **Aseda Cocoa
+Farm** (Under review — it overlaps a protected area). *"An admin can dispute a flag."* Click
+**Clear as false positive**, pick a reason, add a note, confirm. *"It's now Verified (manual
+review) — the decision and who made it stay on record."* Scroll to **Review history** to show it.
+Briefly open **Dadieso Cocoa Farm** and click **Confirm risk** instead to show the other branch —
+*"that one gets Excluded, and excluded farms can never enter a shipment batch."*
+
+**3:15 – Batch (60 s).** Go to **Batches** → open **BATCH-2026-001**. *"This bundles the farms
+that passed screening — Adom, Benso, Asempa — into one traceable shipment for a named buyer, with
+a combined satellite map and a batch-level QR code."* Click **+ New batch** briefly to show the
+farm picker *greys out* anything not Verified — *"Nhyira, Bodi, Dadieso, and the just-excluded
+Aseda can't be added until they clear review."* Cancel out.
+
+**4:15 – Bag QR + PDFs (90 s).** Back in BATCH-2026-001, click **🏷 Print bag labels** — *"every
+bag gets its own ID and QR code, not just the batch."* Open the PDF, show a label. Scan one QR
+with a phone (or open `/bag/<id>` directly) → *"this is what anyone downstream — a customs
+officer, the buyer — sees with no login: a green deforestation-free verdict, the farm, the
+batch, and a small map."* Then click **⤓ Export shipment compliance package** and flip through
+it: compliance statement, QR, contributing-farms table, satellite overview, and a per-farm
+appendix with side-by-side high-res (Esri) and cloud-free (Sentinel-2) imagery — *"so a cloudy
+satellite pass never hides the evidence."*
+
+**5:45 – Mobile (30 s).** Switch to the phone. *"The whole field workflow is mobile-first — the
+sidebar becomes a slide-in menu, tables become cards, and it installs to the home screen like a
+native app."* Show the Dashboard as cards and the ☰ menu.
+
+**6:15 – Close (15 s).** *"Every number here — the risk scores, the imagery, the loss polygons —
+comes from live Earth Engine, not fixtures. It's decision support, not a legal certification, and
+the PDFs say so on every page."*
 
 ## Settings (`backend/.env`)
 
@@ -128,6 +172,19 @@ npm run dev:phone   # vite --host --mode phone (adds @vitejs/plugin-basic-ssl)
 
 Low < 30 ≤ Medium < 60 ≤ High. Any loss ≥ 0.1 ha is at least Medium. Anything not Low, or with
 missing data, goes to **Under review**.
+
+## Running tests
+
+```bash
+cd eudr_gee/backend && source .venv/bin/activate
+python -m pytest -v
+```
+
+`backend/tests/` covers `scoring.py` (risk thresholds, the protected-area and low-imagery review
+flags), `geo.py` (polygon area/validation), and the API end-to-end (create → verify → review →
+batch → bag lookup). Tests never touch `eudr.db` or call Earth Engine: `tests/conftest.py` points
+the app at a throwaway temp-file SQLite database before anything imports `app.db`, and mocks
+`gee_service.screen()` with a deterministic, overridable result.
 
 ## Troubleshooting
 

@@ -9,8 +9,9 @@ const DEFAULT_BUYER = 'Chocolaterie Vandermeer, Ghent, Belgium'
 const KG_PER_BAG = 64
 
 function disabledReason(farm) {
-  if (farm.status === 'Verified') return null
+  if (farm.status === 'Verified' || farm.status === 'Verified (manual review)') return null
   if (!farm.risk_level) return 'Not screened'
+  if (farm.status === 'Excluded') return `Excluded – ${farm.latest_review?.reason || 'manual review'}`
   return `${farm.risk_level} risk – under review`
 }
 
@@ -79,7 +80,7 @@ export default function Batches() {
           <b>New batch</b>
           <label className="field-label">Buyer</label>
           <input value={buyer} onChange={(e) => setBuyer(e.target.value)} />
-          <table className="table" style={{ marginTop: 12 }}>
+          <table className="table batch-select-table" style={{ marginTop: 12 }}>
             <thead>
               <tr><th></th><th>Farm / farmer</th><th>Risk</th><th>Area</th><th>Bags (64 kg each)</th></tr>
             </thead>
@@ -89,13 +90,16 @@ export default function Batches() {
                 const checked = bags[f.id] != null
                 return (
                   <tr key={f.id}>
-                    <td><input type="checkbox" disabled={!!reason} checked={checked} onChange={() => toggleFarm(f.id)} /></td>
-                    <td>
+                    <td data-label="Include"><input type="checkbox" disabled={!!reason} checked={checked} onChange={() => toggleFarm(f.id)} /></td>
+                    <td data-label="Farm">
                       <b>{f.name}</b><br /><small className="muted">{f.code} · {f.farmer_name}</small>
                     </td>
-                    <td>{reason ? <span className="small muted">{reason}</span> : <RiskBadge level={f.risk_level} />}</td>
-                    <td>{f.area_ha} ha</td>
-                    <td>
+                    <td data-label="Risk">
+                      {reason ? <span className="small muted">{reason}</span> : <RiskBadge level={f.risk_level} />}
+                      {f.status === 'Verified (manual review)' && <div><span className="pill ok small">✓ Manually cleared</span></div>}
+                    </td>
+                    <td data-label="Area">{f.area_ha} ha</td>
+                    <td data-label="Bags">
                       {checked && (
                         <input type="number" min="1" style={{ width: 70 }} value={bags[f.id]}
                           onChange={(e) => setBagCount(f.id, e.target.value)} />
@@ -119,17 +123,17 @@ export default function Batches() {
 
       <section className="card">
         <div className="card-head"><b>Batches <span className="pill">{batches.length}</span></b></div>
-        <table className="table">
+        <table className="table batch-list-table">
           <thead><tr><th>Batch</th><th>Buyer</th><th>Farms</th><th>Bags</th><th>Weight</th><th>Created</th></tr></thead>
           <tbody>
             {batches.map((b) => (
               <tr key={b.id}>
-                <td><Link to={`/batches/${b.id}`}><b>{b.code}</b></Link></td>
-                <td>{b.buyer}</td>
-                <td>{b.totals.farms}</td>
-                <td>{b.totals.bags}</td>
-                <td>{b.totals.kg.toFixed(0)} kg</td>
-                <td>{new Date(b.created_at).toLocaleDateString()}</td>
+                <td data-label="Batch"><Link to={`/batches/${b.id}`}><b>{b.code}</b></Link></td>
+                <td data-label="Buyer">{b.buyer}</td>
+                <td data-label="Farms">{b.totals.farms}</td>
+                <td data-label="Bags">{b.totals.bags}</td>
+                <td data-label="Weight">{b.totals.kg.toFixed(0)} kg</td>
+                <td data-label="Created">{new Date(b.created_at).toLocaleDateString()}</td>
               </tr>
             ))}
             {!batches.length && <tr><td colSpan="6" className="muted center">No batches yet.</td></tr>}

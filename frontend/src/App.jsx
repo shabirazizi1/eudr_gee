@@ -7,6 +7,7 @@ import Result from './pages/Result.jsx'
 import Dashboard from './pages/Dashboard.jsx'
 import Batches from './pages/Batches.jsx'
 import BatchDetail from './pages/BatchDetail.jsx'
+import BagPage from './pages/BagPage.jsx'
 
 const ROLES = {
   warehouse: 'Warehouse operator',
@@ -23,6 +24,7 @@ function Shell({ user, children }) {
   const [mode, setMode] = useState(null)
   const [pending, setPending] = useState(outboxCount())
   const [online, setOnline] = useState(navigator.onLine)
+  const [drawerOpen, setDrawerOpen] = useState(false)
 
   useEffect(() => {
     api.health().then((h) => setMode(h.mode)).catch(() => setMode('offline'))
@@ -50,7 +52,8 @@ function Shell({ user, children }) {
 
   return (
     <div className="shell">
-      <aside className="sidebar">
+      <div className={`drawer-backdrop ${drawerOpen ? 'open' : ''}`} onClick={() => setDrawerOpen(false)} />
+      <aside className={`sidebar ${drawerOpen ? 'open' : ''}`} onClick={() => setDrawerOpen(false)}>
         <div className="brand"><span className="brand-mark">❦</span> COCOA INTELLIGENCE</div>
         <div className="nav-label">WORKSPACE</div>
         <NavLink to="/dashboard" className="nav-item">Overview</NavLink>
@@ -64,13 +67,19 @@ function Shell({ user, children }) {
       </aside>
       <div className="main">
         <header className="topbar">
-          <div className="org">Koa Cocoa Collective <span className="pill">Demo workspace</span></div>
+          <div className="row" style={{ gap: 10 }}>
+            <button type="button" className="menu-btn" aria-label="Open menu" onClick={() => setDrawerOpen(true)}>☰</button>
+            <div className="org">Koa Cocoa Collective <span className="pill">Demo workspace</span></div>
+          </div>
           <div className="topbar-right">
             {!online && <span className="pill warn">Offline</span>}
             {pending > 0 && <span className="pill warn">{pending} draft(s) waiting to sync</span>}
             {mode && (
-              <span className={`pill ${mode === 'gee' ? 'ok' : 'warn'}`}>
-                {mode === 'gee' ? 'Earth Engine: live' : mode === 'mock' ? 'Earth Engine: MOCK mode' : 'API offline'}
+              <span className={`pill ee-pill ${mode === 'gee' ? 'ok' : 'warn'}`}>
+                <span className="ee-dot" />
+                <span className="pill-text">
+                  {mode === 'gee' ? 'Earth Engine: live' : mode === 'mock' ? 'Earth Engine: MOCK mode' : 'API offline'}
+                </span>
               </span>
             )}
             <div className="user">
@@ -95,6 +104,7 @@ export default function App() {
   return (
     <Routes>
       <Route path="/login" element={<Login roles={ROLES} />} />
+      <Route path="/bag/:id" element={<BagPage />} />
       <Route path="/dashboard" element={<Protected><Dashboard /></Protected>} />
       <Route path="/farms" element={<Protected><Dashboard listOnly /></Protected>} />
       <Route path="/capture" element={<Protected><Capture /></Protected>} />

@@ -8,3 +8,5 @@ certifi
 httpx
 requests
 qrcode[pil]
+Pillow
+pytest

@@ -55,3 +55,30 @@ class BatchContribution(SQLModel, table=True):
     farm_id: int = Field(foreign_key="farm.id", index=True)
     bags: int
     kg_per_bag: float = 64.0
+
+
+class Bag(SQLModel, table=True):
+    """One physical bag within a batch contribution, for bag-level QR traceability.
+    `bag_id` (e.g. "BAG-0241-0001") is the public, human-readable identifier the QR code encodes
+    -- a numeric sequence per farm that keeps counting across batches, so it never repeats.
+    """
+    id: Optional[int] = Field(default=None, primary_key=True)
+    bag_id: str = Field(index=True, unique=True)
+    farm_id: int = Field(foreign_key="farm.id", index=True)
+    batch_id: int = Field(foreign_key="batch.id", index=True)
+    contribution_id: Optional[int] = Field(default=None, foreign_key="batchcontribution.id", index=True)
+    weight_kg: float
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class Review(SQLModel, table=True):
+    """HLR-05 / DEL-02: a Brand admin's dispute decision on a farm Under review.
+    Never deleted or edited -- the full history stays even after re-screening or further reviews.
+    """
+    id: Optional[int] = Field(default=None, primary_key=True)
+    farm_id: int = Field(foreign_key="farm.id", index=True)
+    decision: str  # "clear" or "confirm"
+    reason: str  # Cloud cover / Natural clearing / Replanting of existing cocoa / Boundary error / Other
+    note: str = ""
+    reviewer_name: str = ""
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

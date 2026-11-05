@@ -17,7 +17,7 @@ F1 login is a role picker only (no real auth) – that's intentional.
   - Vite proxies `/api` to `localhost:8000`
 
 ## Commands
-- Backend: `cd backend && source .venv/bin/activate && python -m uvicorn app.main:app --reload`
+- Backend: `cd backend && source .venv/bin/activate && python -m uvicorn app.main:app --reload --reload-dir app`
 - Always use `python -m ...` inside the venv (system Python lacks the packages).
 - Seed: `python -m app.seed --reset --verify` · GEE check: `python -m app.check_gee`
 - Frontend: `cd frontend && npm run dev` (http://localhost:5173) · build check: `npm run build`

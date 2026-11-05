@@ -18,7 +18,8 @@ body { margin: 0; font-family: Inter, system-ui, sans-serif; background: var(--b
 h1 { font-size: 28px; font-weight: 500; margin: 4px 0; letter-spacing: -0.3px; }
 h2 { font-size: 30px; font-weight: 500; margin: 6px 0; }
 a { color: var(--green); text-decoration: none; }
-input, select { width: 100%; padding: 9px 11px; border: 1px solid var(--line); border-radius: 8px; background: #fff; font: inherit; }
+input, select, textarea { width: 100%; padding: 9px 11px; border: 1px solid var(--line); border-radius: 8px; background: #fff; font: inherit; }
+textarea { resize: vertical; }
 .muted { color: var(--muted); }
 .small { font-size: 12px; }
 .center { text-align: center; }
@@ -136,8 +137,104 @@ input, select { width: 100%; padding: 9px 11px; border: 1px solid var(--line); b
 .search { width: 220px; }
 .card-head select { width: auto; }
 
+/* mobile nav: hamburger + slide-in drawer, Earth Engine pill collapses to a dot */
+.menu-btn { display: none; background: none; border: 0; font-size: 20px; line-height: 1; cursor: pointer;
+  color: var(--ink); padding: 4px 6px; }
+.drawer-backdrop { display: none; }
+.ee-dot { display: none; width: 9px; height: 9px; border-radius: 50%; background: currentColor; }
+
 @media (max-width: 900px) {
-  .login, .grid-capture, .grid-result { grid-template-columns: 1fr; }
+  .login, .grid-capture { grid-template-columns: 1fr; }
   .kpis { grid-template-columns: 1fr 1fr; }
-  .sidebar { display: none; }
+
+  .menu-btn { display: inline-flex; }
+  .topbar { padding: 12px 14px; }
+  .content { padding: 16px 14px 32px; }
+  .sidebar {
+    display: flex; position: fixed; inset: 0 auto 0 0; width: 240px; z-index: 1001;
+    transform: translateX(-100%); transition: transform 0.2s ease; box-shadow: 2px 0 16px rgba(0,0,0,0.3);
+  }
+  .sidebar.open { transform: translateX(0); }
+  .drawer-backdrop.open { display: block; position: fixed; inset: 0; background: rgba(20,16,10,0.4); z-index: 1000; }
+  .ee-pill .pill-text { display: none; }
+  .ee-pill { padding: 6px; }
+  .ee-pill .ee-dot { display: inline-block; }
+  .user div:first-child { display: none; } /* name/role text -- avatar alone is enough on a phone topbar */
+  .topbar-right { gap: 6px; }
+  .org { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 130px; }
+  .org .pill { display: none; }
+
+  /* page headers: stack title + actions, buttons go full-width */
+  .page-head { flex-direction: column; align-items: stretch; gap: 10px; }
+  .page-head .row { flex-direction: column; align-items: stretch; }
+  .page-head .btn { width: 100%; }
+  .row.gap { flex-wrap: wrap; }
+  .row.gap .btn { flex: 1 1 140px; }
+
+  /* 16px inputs everywhere on mobile avoids iOS Safari's auto-zoom-on-focus */
+  input, select, textarea { font-size: 16px; }
+
+  /* login: hero collapses to a short strip, role cards stack */
+  .login { padding: 16px; gap: 16px; }
+  .login-hero { padding: 18px; min-height: 0; }
+  .login-hero h1 { font-size: 26px; }
+  .login-hero p { display: none; }
+  .roles { grid-template-columns: 1fr; }
+
+  /* capture: map fills most of the screen height; walk mode gets a sticky bottom action bar.
+     Walk mode's map is shorter than the editor's -- it needs to leave room, above the fold,
+     for the always-visible accuracy/point-count readout and the fixed button bar below it. */
+  .capture-map-card .map-wrap { height: 55vh !important; }
+  .walk-map .map-wrap { height: 32vh !important; }
+  .toggle-btn { padding: 14px 10px; font-size: 15px; min-height: 48px; }
+  .walk-meta { font-size: 15px; }
+  .walk-meta b { font-size: 19px; }
+  .walk-panel { padding-bottom: 140px !important; }
+  .walk-actions {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 400; margin: 0; gap: 8px;
+    background: var(--card); border-top: 1px solid var(--line);
+    padding: 10px 14px calc(10px + env(safe-area-inset-bottom));
+  }
+  .walk-actions .btn { flex: 1 1 auto; min-height: 48px; font-size: 14px; }
+  .walk-actions .btn.primary { flex-basis: 100%; order: -1; }
+
+  /* result: verdict (above grid already) -> score card -> map -> evidence */
+  .grid-result { display: flex; flex-direction: column; }
+  .result-score { order: 1; }
+  .result-map { order: 2; }
+
+  /* dashboard / batches tables: one card per row instead of a wide table */
+  .table thead { display: none; }
+  .table, .table tbody, .table tr, .table td { display: block; width: 100%; }
+  .table { border: 0; }
+  .table tr {
+    background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 10px 12px; margin-bottom: 10px;
+  }
+  .table td {
+    display: flex; justify-content: space-between; align-items: center; gap: 10px;
+    padding: 6px 0; border-top: 0; border-bottom: 1px dashed var(--line); text-align: right;
+  }
+  .table td:last-child { border-bottom: 0; }
+  .table td::before { content: attr(data-label); color: var(--muted); font-size: 12px; font-weight: 500;
+    text-align: left; flex-shrink: 0; }
+  .table td[data-label=""]::before, .table td:not([data-label])::before { content: none; }
+
+  /* trim each table to its essential mobile fields: name, risk/status, action */
+  .dash-table td:nth-child(2), .dash-table td:nth-child(4), .dash-table td:nth-child(6) { display: none; }
+  .batch-select-table td:nth-child(4) { display: none; }
+  .batch-list-table td:nth-child(3), .batch-list-table td:nth-child(5) { display: none; }
+  .contrib-table td:nth-child(3), .contrib-table td:nth-child(5) { display: none; }
 }
+
+/* public bag page (no login, QR target, mobile-first) */
+.bag-page { max-width: 480px; margin: 0 auto; padding: 24px 16px 48px; }
+.bag-brand { font-size: 11px; letter-spacing: 1px; font-weight: 600; color: var(--muted); text-align: center; margin-bottom: 18px; }
+.bag-status { text-align: center; padding: 28px 16px; border-radius: var(--radius); margin-bottom: 16px; }
+.bag-status.ok { background: #e3efdc; color: #1f4d26; }
+.bag-status.bad { background: #f6dcd8; color: #7a2117; }
+.bag-status .icon { display: block; font-size: 48px; line-height: 1; margin-bottom: 8px; }
+.bag-status .label { font-size: 18px; font-weight: 600; }
+.bag-row { display: flex; justify-content: space-between; gap: 10px; padding: 8px 0; border-bottom: 1px dashed var(--line); }
+.bag-row:last-child { border-bottom: 0; }
+.bag-row span { color: var(--muted); }

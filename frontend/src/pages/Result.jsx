@@ -1,15 +1,99 @@
 import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { api } from '../api.js'
+import { getUser } from '../App.jsx'
 import FarmMap from '../components/FarmMap.jsx'
 import RiskBadge from '../components/RiskBadge.jsx'
 
 // F3 – GEE satellite verification result (Figure 3)
+// HLR-05 / DEL-02 – admin review / dispute workflow for farms Under review
+const REVIEW_REASONS = ['Cloud cover', 'Natural clearing', 'Replanting of existing cocoa', 'Boundary error', 'Other']
+
+function ReviewPanel({ farm, isAdmin, onReviewed }) {
+  const [decision, setDecision] = useState(null) // 'clear' | 'confirm' | null
+  const [reason, setReason] = useState(REVIEW_REASONS[0])
+  const [note, setNote] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+
+  const pick = (d) => { setDecision(d); setError('') }
+
+  const submit = async () => {
+    if (!note.trim()) { setError('A note is required.'); return }
+    setError(''); setBusy(true)
+    try {
+      const updated = await api.reviewFarm(farm.id, {
+        decision, reason, note: note.trim(), reviewer_name: getUser()?.name || '',
+      })
+      onReviewed(updated)
+      setDecision(null); setNote('')
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <section className="card pad">
+      <div className="card-head tight"><b>Review decision</b><small className="muted">Brand admin</small></div>
+      {!isAdmin && (
+        <p className="small muted">Read-only — only a Brand admin can record a review decision.</p>
+      )}
+      <div className="row gap">
+        <button className="btn" disabled={!isAdmin} onClick={() => pick('clear')}>Clear as false positive</button>
+        <button className="btn" disabled={!isAdmin} onClick={() => pick('confirm')}>Confirm risk – exclude from supply</button>
+      </div>
+      {isAdmin && decision && (
+        <div className="stack" style={{ gap: 8, marginTop: 10 }}>
+          <label className="field-label">Reason</label>
+          <select value={reason} onChange={(e) => setReason(e.target.value)}>
+            {REVIEW_REASONS.map((r) => <option key={r}>{r}</option>)}
+          </select>
+          <label className="field-label">Note *</label>
+          <textarea rows={3} value={note} onChange={(e) => setNote(e.target.value)}
+            placeholder="What did you check, and why this decision?" />
+          {error && <p className="small bad-text">{error}</p>}
+          <div className="row gap">
+            <button className="btn primary" disabled={busy} onClick={submit}>
+              {busy ? 'Saving…' : decision === 'clear' ? 'Confirm: clear as false positive' : 'Confirm: exclude from supply'}
+            </button>
+            <button className="btn" disabled={busy} onClick={() => { setDecision(null); setError('') }}>Cancel</button>
+          </div>
+        </div>
+      )}
+    </section>
+  )
+}
+
+function ReviewHistory({ reviews }) {
+  return (
+    <section className="card pad">
+      <div className="card-head tight"><b>Review history</b><small className="muted">{reviews.length} decision(s)</small></div>
+      <div className="stack" style={{ gap: 10 }}>
+        {reviews.map((r) => (
+          <div key={r.id} style={{ borderBottom: '1px dashed var(--line)', paddingBottom: 8 }}>
+            <div className="row between">
+              <b className={r.decision === 'clear' ? 'ok-text' : 'bad-text'}>
+                {r.decision === 'clear' ? '✓ Cleared — false positive' : '✗ Confirmed — excluded from supply'}
+              </b>
+              <span className="small muted">{new Date(r.created_at).toLocaleString()}</span>
+            </div>
+            <div className="small">{r.reason}{r.reviewer_name ? ` · ${r.reviewer_name}` : ''}</div>
+            {r.note && <div className="small muted">{r.note}</div>}
+          </div>
+        ))}
+      </div>
+    </section>
+  )
+}
+
 export default function Result() {
   const { id } = useParams()
   const [farm, setFarm] = useState(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const isAdmin = getUser()?.role === 'admin'
 
   useEffect(() => { api.farm(id).then(setFarm).catch((e) => setError(e.message)) }, [id])
 
@@ -60,7 +144,7 @@ export default function Result() {
       )}
 
       <div className="grid-result">
-        <section className="card">
+        <section className="card result-map">
           <div className="card-head"><b>Forest change screening</b>
             {v?.loss_tiles && <span className="pill"><span className="sw red" /> Tree-cover loss after 2020</span>}
           </div>
@@ -77,7 +161,7 @@ export default function Result() {
           </div>
         </section>
 
-        <aside className="card pad">
+        <aside className="card pad result-score">
           <div className="card-head tight"><b>Satellite risk score</b><small className="muted">GEE screening</small></div>
           {v ? (
             <>
@@ -108,6 +192,11 @@ export default function Result() {
           ) : <p className="muted small">No result yet.</p>}
         </aside>
       </div>
+
+      {farm.status === 'Under review' && (
+        <ReviewPanel farm={farm} isAdmin={isAdmin} onReviewed={setFarm} />
+      )}
+      {farm.reviews?.length > 0 && <ReviewHistory reviews={farm.reviews} />}
 
       {v && (
         <section className="card">

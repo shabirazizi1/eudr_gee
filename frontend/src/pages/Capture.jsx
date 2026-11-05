@@ -253,7 +253,7 @@ export default function Capture() {
       </div>
 
       <div className="grid-capture">
-        <section className="card">
+        <section className="card capture-map-card">
           <div className="card-head"><b>Boundary editor</b>
             <span className={`pill ${stats?.valid ? 'ok' : ''}`}>
               {stats ? (stats.valid ? '● Polygon closed' : '● Fix crossing lines') : 'Draw or walk the boundary ⬠'}
@@ -282,10 +282,12 @@ export default function Capture() {
             </>
           ) : (
             <>
-              <FarmMap key="walk" mode="walk" walkPoints={walkPoints} livePosition={livePosition} />
-              <div className="stack" style={{ gap: 8, padding: 16 }}>
+              <div className="walk-map">
+                <FarmMap key="walk" mode="walk" walkPoints={walkPoints} livePosition={livePosition} />
+              </div>
+              <div className="stack walk-panel" style={{ gap: 8, padding: 16 }}>
                 {gpsError && <p className="small bad-text">⚠ {gpsError}</p>}
-                <div className="row between">
+                <div className="row between walk-meta">
                   <span className="small muted">
                     Current accuracy: <b>{livePosition ? `${livePosition.accuracy.toFixed(1)} m` : '–'}</b>
                   </span>
@@ -296,7 +298,7 @@ export default function Capture() {
                     {pointNotice.kind === 'error' ? '✗' : pointNotice.kind === 'warn' ? '⚠' : '✓'} {pointNotice.message}
                   </p>
                 )}
-                <div className="row gap">
+                <div className="row gap walk-actions">
                   <button type="button" className="btn primary" disabled={sampling} onClick={addPoint}>
                     {sampling ? 'Reading GPS…' : '◎ Add point here'}
                   </button>

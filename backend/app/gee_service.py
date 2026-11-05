@@ -6,11 +6,14 @@ Screens a farm polygon against:
   3. WDPA protected areas           -> overlap with any protected area
 """
 import hashlib
+import math
 import random
 from datetime import date, timedelta
+from io import BytesIO
 
 import certifi
 import requests
+from PIL import Image, ImageDraw, ImageFont
 
 from . import config
 
@@ -134,14 +137,139 @@ def gee_screen(geojson: dict) -> dict:
     }
 
 
-def satellite_thumbnail(geojson: dict) -> bytes:
-    """A PNG map for the PDF report: cloud-free Sentinel-2 true-colour composite
-    (last 12 months) around the farm, with post-2020 Hansen loss in red and the
-    farm boundary painted in yellow. Raises on any failure -- the caller falls
-    back to a plain boundary drawing.
+def _geojson_bbox(geoms: list) -> tuple:
+    xs = [p[0] for g in geoms for p in g["coordinates"][0]]
+    ys = [p[1] for g in geoms for p in g["coordinates"][0]]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def _buffer_bbox(minx, miny, maxx, maxy, meters):
+    lat_mid = (miny + maxy) / 2
+    buf_lat = meters / 111_320
+    buf_lon = meters / (111_320 * math.cos(math.radians(lat_mid)))
+    return minx - buf_lon, miny - buf_lat, maxx + buf_lon, maxy + buf_lat
+
+
+def _to_jpeg(img, quality=85) -> bytes:
+    buf = BytesIO()
+    img.convert("RGB").save(buf, format="JPEG", quality=quality)
+    return buf.getvalue()
+
+
+def _label_font(size=18):
+    for path in ("/System/Library/Fonts/Helvetica.ttc", "/System/Library/Fonts/Supplemental/Arial.ttf",
+                 "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"):
+        try:
+            return ImageFont.truetype(path, size)
+        except Exception:
+            continue
+    return ImageFont.load_default()
+
+
+# ---------------------------------------------------------------- Esri tile imagery (sharp background)
+
+ESRI_TILE_URL = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+TILE_SIZE = 256
+
+
+def _deg2tile(lat, lon, zoom):
+    """Slippy-map (Web Mercator) tile coordinates, kept fractional for sub-tile pixel cropping."""
+    lat_rad = math.radians(lat)
+    n = 2.0 ** zoom
+    xtile = (lon + 180.0) / 360.0 * n
+    ytile = (1.0 - math.log(math.tan(lat_rad) + 1 / math.cos(lat_rad)) / math.pi) / 2.0 * n
+    return xtile, ytile
+
+
+def _pick_zoom(minx, miny, maxx, maxy, max_zoom=17, min_zoom=11, max_tiles=48):
+    """Highest zoom (sharpest) for which the bbox needs at most `max_tiles` Esri tiles."""
+    for z in range(max_zoom, min_zoom - 1, -1):
+        x0f, y0f = _deg2tile(maxy, minx, z)
+        x1f, y1f = _deg2tile(miny, maxx, z)
+        cols = int(math.floor(max(x0f, x1f))) - int(math.floor(min(x0f, x1f))) + 1
+        rows = int(math.floor(max(y0f, y1f))) - int(math.floor(min(y0f, y1f))) + 1
+        if cols * rows <= max_tiles:
+            return z
+    return min_zoom
+
+
+def _stitch_esri_tiles(minx, miny, maxx, maxy, zoom):
+    """Fetch and stitch Esri World Imagery tiles covering the bbox, cropped to it exactly."""
+    x0f, y0f = _deg2tile(maxy, minx, zoom)   # top-left corner (max lat, min lon)
+    x1f, y1f = _deg2tile(miny, maxx, zoom)   # bottom-right corner (min lat, max lon)
+    xt0, xt1 = int(math.floor(min(x0f, x1f))), int(math.floor(max(x0f, x1f)))
+    yt0, yt1 = int(math.floor(min(y0f, y1f))), int(math.floor(max(y0f, y1f)))
+
+    canvas = Image.new("RGB", ((xt1 - xt0 + 1) * TILE_SIZE, (yt1 - yt0 + 1) * TILE_SIZE))
+    for tx in range(xt0, xt1 + 1):
+        for ty in range(yt0, yt1 + 1):
+            url = ESRI_TILE_URL.format(z=zoom, y=ty, x=tx)
+            resp = requests.get(url, timeout=15, verify=certifi.where())
+            resp.raise_for_status()
+            tile = Image.open(BytesIO(resp.content)).convert("RGB")
+            canvas.paste(tile, ((tx - xt0) * TILE_SIZE, (ty - yt0) * TILE_SIZE))
+
+    px0, py0 = (x0f - xt0) * TILE_SIZE, (y0f - yt0) * TILE_SIZE
+    px1, py1 = (x1f - xt0) * TILE_SIZE, (y1f - yt0) * TILE_SIZE
+    return canvas.crop((round(px0), round(py0), round(px1), round(py1)))
+
+
+def _ee_overlay_png(minx, miny, maxx, maxy, w, h, loss_geom, boundary_fc):
+    """Transparent PNG (post-2020 Hansen loss in red, boundary in yellow) sized to exactly
+    match an Esri tile crop of the same bbox, so the two composite in pixel-perfect alignment.
+    """
+    cutoff = config.CUTOFF_YEAR - 2000
+    hansen = ee.Image(config.HANSEN_ASSET)
+    post_loss = hansen.select("lossyear").unmask(0).gt(cutoff)
+    loss_rgb = post_loss.selfMask().clip(loss_geom).visualize(palette=["e0453a"])
+
+    boundary = ee.Image().byte().paint(boundary_fc, 1, 3)
+    boundary_rgb = boundary.selfMask().visualize(min=1, max=1, palette=["ffe034"])
+
+    overlay = loss_rgb.blend(boundary_rgb)
+    region = ee.Geometry.Rectangle([minx, miny, maxx, maxy])
+    url = overlay.getThumbURL({"region": region, "dimensions": f"{w}x{h}", "format": "png"})
+
+    resp = requests.get(url, timeout=30, verify=certifi.where())
+    resp.raise_for_status()
+    return Image.open(BytesIO(resp.content)).convert("RGBA")
+
+
+def satellite_thumbnail_pair(geojson: dict) -> dict:
+    """Two JPEG maps for the PDF report, each with post-2020 Hansen loss (clipped to a 300 m
+    buffer) in red and the farm boundary in yellow on top:
+      "esri"      -- sharp Esri World Imagery (can have clouds on the capture date)
+      "sentinel2" -- a cloud-free Sentinel-2 composite (last 12 months), lower resolution
+    Either key is None if that source failed; the caller falls back to a plain drawing if both are.
     """
     _init()
     geom = ee.Geometry(geojson)
+    out = {"esri": None, "sentinel2": None}
+
+    try:
+        minx, miny, maxx, maxy = _buffer_bbox(*_geojson_bbox([geojson]), 300)
+        zoom = _pick_zoom(minx, miny, maxx, maxy, max_zoom=17)
+        base = _stitch_esri_tiles(minx, miny, maxx, maxy, zoom)
+        w, h = base.size
+        overlay = _ee_overlay_png(minx, miny, maxx, maxy, w, h, loss_geom=geom.buffer(300),
+                                   boundary_fc=ee.FeatureCollection([ee.Feature(geom)]))
+        base = base.convert("RGBA")
+        base.alpha_composite(overlay)
+        out["esri"] = _to_jpeg(base)
+    except Exception:
+        pass
+
+    try:
+        out["sentinel2"] = _to_jpeg(_sentinel_thumbnail_image(geom))
+    except Exception:
+        pass
+
+    return out
+
+
+def _sentinel_thumbnail_image(geom):
+    """A cloud-free Sentinel-2 true-colour composite (last 12 months) with the boundary +
+    loss overlay, as a PIL Image."""
     buffered = geom.buffer(300)
     region = buffered.bounds()
 
@@ -155,7 +283,7 @@ def satellite_thumbnail(geojson: dict) -> bytes:
     cutoff = config.CUTOFF_YEAR - 2000
     hansen = ee.Image(config.HANSEN_ASSET)
     post_loss = hansen.select("lossyear").unmask(0).gt(cutoff)
-    loss_rgb = post_loss.selfMask().clip(geom.buffer(500)).visualize(palette=["e0453a"])
+    loss_rgb = post_loss.selfMask().clip(geom.buffer(300)).visualize(palette=["e0453a"])
 
     boundary = ee.Image().byte().paint(ee.FeatureCollection([ee.Feature(geom)]), 1, 3)
     boundary_rgb = boundary.selfMask().visualize(min=1, max=1, palette=["ffe034"])
@@ -165,7 +293,84 @@ def satellite_thumbnail(geojson: dict) -> bytes:
 
     resp = requests.get(url, timeout=30, verify=certifi.where())
     resp.raise_for_status()
-    return resp.content
+    return Image.open(BytesIO(resp.content)).convert("RGB")
+
+
+def satellite_overview_thumbnail(farms: list) -> tuple:
+    """A labelled PNG map for the batch PDF: sharp Esri World Imagery covering every
+    contributing farm, with every farm boundary in yellow (labelled with its farm code) and
+    post-2020 Hansen loss in red, each clipped to a 300 m buffer around its own farm.
+    Falls back to a Sentinel-2 composite, then lets the caller fall back to a plain drawing.
+    `farms` is a list of {"geometry": GeoJSON Polygon, "code": str}.
+    Returns (png_bytes, source) where source is "esri" or "sentinel2".
+    """
+    _init()
+    geoms = [f["geometry"] for f in farms]
+    minx, miny, maxx, maxy = _buffer_bbox(*_geojson_bbox(geoms), 300)
+    try:
+        zoom = _pick_zoom(minx, miny, maxx, maxy, max_zoom=17)
+        base = _stitch_esri_tiles(minx, miny, maxx, maxy, zoom)
+        w, h = base.size
+        loss_geom = ee.FeatureCollection(
+            [ee.Feature(ee.Geometry(g).buffer(300)) for g in geoms]).geometry()
+        boundary_fc = ee.FeatureCollection([ee.Feature(ee.Geometry(g)) for g in geoms])
+        overlay = _ee_overlay_png(minx, miny, maxx, maxy, w, h, loss_geom, boundary_fc)
+        base = base.convert("RGBA")
+        base.alpha_composite(overlay)
+        img = base.convert("RGB")
+        source = "esri"
+    except Exception:
+        img = _sentinel_overview_image(geoms, minx, miny, maxx, maxy)
+        source = "sentinel2"
+
+    # Earth Engine/Esri can't label features inside a raster image, so composite the farm
+    # codes on afterwards with the same linear bbox->pixel mapping used for the request.
+    # Larger font + a white outline keeps the yellow label legible over any background.
+    w, h = img.size
+    draw = ImageDraw.Draw(img)
+    font = _label_font(26)
+    for f, g in zip(farms, geoms):
+        ring = g["coordinates"][0]
+        cx = sum(p[0] for p in ring) / len(ring)
+        cy = sum(p[1] for p in ring) / len(ring)
+        x = (cx - minx) / (maxx - minx) * w
+        y = (maxy - cy) / (maxy - miny) * h - 16
+        label = f["code"]
+        for dx in (-2, -1, 0, 1, 2):
+            for dy in (-2, -1, 0, 1, 2):
+                if dx or dy:
+                    draw.text((x + dx, y + dy), label, font=font, fill="white", anchor="mm")
+        draw.text((x, y), label, font=font, fill="#ffe034", anchor="mm")
+
+    return _to_jpeg(img), source
+
+
+def _sentinel_overview_image(geoms, minx, miny, maxx, maxy):
+    """Fallback base image for `satellite_overview_thumbnail`: a Sentinel-2 composite."""
+    region = ee.Geometry.Rectangle([minx, miny, maxx, maxy])
+    today = date.today()
+    start = (today - timedelta(days=365)).isoformat()
+    s2 = _s2_collection(region, start, today.isoformat())
+    if s2.size().getInfo() == 0:
+        raise RuntimeError("No cloud-free Sentinel-2 imagery in the last 12 months")
+    rgb = s2.median().select(["B4", "B3", "B2"]).visualize(min=0, max=3000, gamma=1.3)
+
+    loss_geom = ee.FeatureCollection(
+        [ee.Feature(ee.Geometry(g).buffer(300)) for g in geoms]).geometry()
+    cutoff = config.CUTOFF_YEAR - 2000
+    hansen = ee.Image(config.HANSEN_ASSET)
+    post_loss = hansen.select("lossyear").unmask(0).gt(cutoff)
+    loss_rgb = post_loss.selfMask().clip(loss_geom).visualize(palette=["e0453a"])
+
+    fc = ee.FeatureCollection([ee.Feature(ee.Geometry(g)) for g in geoms])
+    boundary = ee.Image().byte().paint(fc, 1, 3)
+    boundary_rgb = boundary.selfMask().visualize(min=1, max=1, palette=["ffe034"])
+
+    composite = rgb.blend(loss_rgb).blend(boundary_rgb)
+    url = composite.getThumbURL({"region": region, "dimensions": 700, "format": "png"})
+    resp = requests.get(url, timeout=30, verify=certifi.where())
+    resp.raise_for_status()
+    return Image.open(BytesIO(resp.content)).convert("RGB")
 
 
 # ---------------------------------------------------------------- mock
