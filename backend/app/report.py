@@ -11,7 +11,8 @@ from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.pdfgen import canvas as pdfcanvas
 from reportlab.platypus import Image as RLImage
-from reportlab.platypus import KeepTogether, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import (BaseDocTemplate, Frame, KeepTogether, PageBreak, PageTemplate, Paragraph,
+                                 SimpleDocTemplate, Spacer, Table, TableStyle)
 
 from . import config, gee_service
 
@@ -32,10 +33,15 @@ CONTENT_WIDTH = A4[0] - 2 * PAGE_MARGIN
 
 # ---------------------------------------------------------------- page chrome (header/footer)
 
-def _make_canvas(title: str, code: str):
-    """A canvasmaker that stamps every page with a title/code header and a disclaimer +
-    'Page X of Y' footer, once the total page count is known (the classic ReportLab
-    buffered-canvas pattern -- `showPage` defers drawing until `save` sees every page).
+def _make_canvas(title: str, code: str, margin: float = PAGE_MARGIN, footer: str = "full"):
+    """A canvasmaker that stamps every page with a title/code header and a footer, once the
+    total page count is known (the classic ReportLab buffered-canvas pattern -- `showPage`
+    defers drawing until `save` sees every page).
+
+    `footer="full"` (the default) adds the disclaimer lines above a 'Page X of Y · Generated ...'
+    line, for reports meant to be read. `footer="minimal"` drops the disclaimer and separator
+    line and keeps only a small 'Page X of Y' -- for sticker sheets (bag labels), where the
+    normal 22 mm footer band would eat into the printable label area.
     """
     generated = f"{date.today():%d %b %Y}"
 
@@ -58,24 +64,29 @@ def _make_canvas(title: str, code: str):
 
         def _draw_chrome(self, total):
             w, h = A4
+            title_y = h - (9 * mm if footer == "minimal" else 12 * mm)
+            line_y = h - (11 * mm if footer == "minimal" else 14 * mm)
             self.setFont("Helvetica-Bold", 9)
             self.setFillColor(GREEN)
-            self.drawString(PAGE_MARGIN, h - 12 * mm, title)
+            self.drawString(margin, title_y, title)
             self.setFont("Helvetica", 9)
             self.setFillColor(colors.grey)
-            self.drawRightString(w - PAGE_MARGIN, h - 12 * mm, code)
+            self.drawRightString(w - margin, title_y, code)
             self.setStrokeColor(colors.HexColor("#e6dfd2"))
             self.setLineWidth(0.5)
-            self.line(PAGE_MARGIN, h - 14 * mm, w - PAGE_MARGIN, h - 14 * mm)
+            self.line(margin, line_y, w - margin, line_y)
 
-            self.setStrokeColor(colors.HexColor("#e6dfd2"))
-            self.line(PAGE_MARGIN, 18 * mm, w - PAGE_MARGIN, 18 * mm)
             self.setFont("Helvetica", 7)
             self.setFillColor(colors.grey)
-            self.drawString(PAGE_MARGIN, 14.5 * mm, DISCLAIMER_LINES[0])
-            self.drawString(PAGE_MARGIN, 11.5 * mm, DISCLAIMER_LINES[1])
-            self.drawRightString(w - PAGE_MARGIN, 8 * mm,
-                                  f"Page {self._pageNumber} of {total} · Generated {generated}")
+            if footer == "full":
+                self.setStrokeColor(colors.HexColor("#e6dfd2"))
+                self.line(margin, 18 * mm, w - margin, 18 * mm)
+                self.drawString(margin, 14.5 * mm, DISCLAIMER_LINES[0])
+                self.drawString(margin, 11.5 * mm, DISCLAIMER_LINES[1])
+                self.drawRightString(w - margin, 8 * mm,
+                                      f"Page {self._pageNumber} of {total} · Generated {generated}")
+            else:
+                self.drawRightString(w - margin, 6 * mm, f"Page {self._pageNumber} of {total}")
 
     return _ChromeCanvas
 
@@ -555,50 +566,69 @@ def build_batch_pdf(batch, data: dict) -> bytes:
 
 
 # ---------------------------------------------------------------- bag labels (HLR-02: bag-level QR)
-
-LABEL_COLS, LABEL_ROWS = 2, 4  # 8 labels per A4 page
+# Avery L7163: 2 columns x 7 rows of 99.1 x 38.1 mm labels, 14 per A4 sheet -- a standard sticker
+# template, so the geometry below must match it exactly (margins, column gap, row pitch) or
+# printed labels drift off their physical die-cuts after the first few rows.
+LABEL_COLS, LABEL_ROWS = 2, 7
+LABEL_W, LABEL_H = 99.1 * mm, 38.1 * mm
+LABEL_GAP_X = 2.5 * mm            # gap between the two columns (Avery L7163 horizontal pitch - label width)
+LABEL_SIDE_MARGIN = 4.65 * mm     # Avery L7163 side margin
+LABEL_TOP_BOTTOM_MARGIN = 15.15 * mm  # Avery L7163 top/bottom margin
+QR_SIZE = 28 * mm                 # "at least 28 mm" readable floor
+QR_COL_W = 34 * mm
+INFO_COL_W = LABEL_W - QR_COL_W
 
 
 def build_bag_labels_pdf(batch, bags: list) -> bytes:
-    """A printable sheet of bag labels, ~8 per A4 page: each has a QR linking to the public
-    `/bag/{bag_id}` page, the bag ID, farm code + name, batch code and weight.
+    """A printable sheet of bag labels sized for Avery L7163 sticker sheets (14 per A4 page,
+    2 x 7, 99.1 x 38.1 mm each): each label has a QR linking to the public `/bag/{bag_id}` page,
+    the bag ID, farm code + name, batch code and weight.
     `bags` is a list of {"bag_id", "weight_kg", "farm_name", "farm_code", "batch_code"}.
     """
     buf = io.BytesIO()
-    side_margin = 10 * mm
-    # Top/bottom match the header+footer chrome band used elsewhere, so the label grid's
-    # computed height can't run under the footer and get silently split across two PDF pages.
-    doc = SimpleDocTemplate(buf, pagesize=A4, title=f"Bag labels {batch.code}",
-                            leftMargin=side_margin, rightMargin=side_margin,
-                            topMargin=22 * mm, bottomMargin=22 * mm)
+    # BaseDocTemplate + an explicit zero-padding Frame, not SimpleDocTemplate: SimpleDocTemplate's
+    # build() always creates its own Frame with ReportLab's default 6pt padding on every side,
+    # which doesn't show up with generous margins elsewhere but silently ate into this sheet's
+    # zero-slack, Avery-exact row heights -- the label grid was reportedly "266.7mm, fits fine"
+    # by wrap(), yet still split onto a second page because the frame's *usable* area was ~4mm
+    # shorter than its nominal margins implied.
+    doc = BaseDocTemplate(buf, pagesize=A4, title=f"Bag labels {batch.code}",
+                          leftMargin=LABEL_SIDE_MARGIN, rightMargin=LABEL_SIDE_MARGIN,
+                          topMargin=LABEL_TOP_BOTTOM_MARGIN, bottomMargin=LABEL_TOP_BOTTOM_MARGIN)
+    frame = Frame(doc.leftMargin, doc.bottomMargin, doc.width, doc.height,
+                  leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=0, id="labels")
+    doc.addPageTemplates([PageTemplate(id="labels", frames=[frame])])
     ss = getSampleStyleSheet()
     bag_id_style = ss["BodyText"].clone("bagid", fontSize=12, leading=14, fontName="Helvetica-Bold")
     farm_style = ss["BodyText"].clone("bagfarm", fontSize=9, leading=11)
     meta_style = ss["BodyText"].clone("bagmeta", fontSize=8, leading=10, textColor=colors.grey)
 
-    cell_w = (A4[0] - 2 * side_margin) / LABEL_COLS
-
     def make_label(bag):
-        """A single bordered label: QR + text, sized by its natural content height (not a
-        forced row height) -- avoids ReportLab nested-table height quirks entirely."""
-        qr = _qr_drawing(f"{config.FRONTEND_URL}/bag/{bag['bag_id']}", size=24 * mm)
+        """A single bordered label: QR + text, sized to exactly fill one 99.1 x 38.1 mm Avery
+        cell. Only one level of fixed-height nesting (the page grid below) -- stacking fixed
+        row heights more than one level deep is what caused the earlier pagination bug."""
+        qr = _qr_drawing(f"{config.FRONTEND_URL}/bag/{bag['bag_id']}", size=QR_SIZE)
         info = Table([
             [Paragraph(bag["bag_id"], bag_id_style)],
             [Paragraph(bag["farm_name"], farm_style)],
             [Paragraph(bag["farm_code"], meta_style)],
             [Paragraph(f"Batch {bag['batch_code']}", meta_style)],
             [Paragraph(f"{bag['weight_kg']:.0f} kg", meta_style)],
-        ], colWidths=[cell_w - 42 * mm])
+        ], colWidths=[INFO_COL_W - 5 * mm])
         info.setStyle(TableStyle([("TOPPADDING", (0, 0), (-1, -1), 0.5),
                                   ("BOTTOMPADDING", (0, 0), (-1, -1), 0.5),
-                                  ("LEFTPADDING", (0, 0), (-1, -1), 0)]))
-        cell = Table([[qr, info]], colWidths=[26 * mm, cell_w - 26 * mm - 20 * mm])
+                                  ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                                  ("RIGHTPADDING", (0, 0), (-1, -1), 0)]))
+        cell = Table([[qr, info]], colWidths=[QR_COL_W, INFO_COL_W])
         cell.setStyle(TableStyle([("BOX", (0, 0), (-1, -1), 0.75, colors.HexColor("#cccccc")),
                                   ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                                  ("LEFTPADDING", (0, 0), (0, 0), 8),
-                                  ("RIGHTPADDING", (1, 0), (1, 0), 6),
-                                  ("TOPPADDING", (0, 0), (-1, -1), 8),
-                                  ("BOTTOMPADDING", (0, 0), (-1, -1), 8)]))
+                                  ("ALIGN", (0, 0), (0, 0), "CENTER"),
+                                  ("TOPPADDING", (0, 0), (-1, -1), 4 * mm),
+                                  ("BOTTOMPADDING", (0, 0), (-1, -1), 4 * mm),
+                                  ("LEFTPADDING", (0, 0), (0, 0), 2 * mm),
+                                  ("RIGHTPADDING", (0, 0), (0, 0), 2 * mm),
+                                  ("LEFTPADDING", (1, 0), (1, 0), 3 * mm),
+                                  ("RIGHTPADDING", (1, 0), (1, 0), 2 * mm)]))
         return cell
 
     per_page = LABEL_COLS * LABEL_ROWS
@@ -606,20 +636,21 @@ def build_bag_labels_pdf(batch, bags: list) -> bytes:
     for start in range(0, len(bags), per_page):
         page_bags = bags[start:start + per_page]
         rows = []
-        for r in range(0, len(page_bags), LABEL_COLS):
-            row = [make_label(b) for b in page_bags[r:r + LABEL_COLS]]
-            while len(row) < LABEL_COLS:
-                row.append("")
-            rows.append(row)
-        grid = Table(rows, colWidths=[cell_w] * LABEL_COLS)
+        for r in range(LABEL_ROWS):
+            left = page_bags[r * 2] if r * 2 < len(page_bags) else None
+            right = page_bags[r * 2 + 1] if r * 2 + 1 < len(page_bags) else None
+            rows.append([make_label(left) if left else "", "", make_label(right) if right else ""])
+        # Fixed row heights, filling every row of the sheet even when some labels are blank, so
+        # printed content always lands on the physical die-cuts regardless of how many bags fit.
+        grid = Table(rows, colWidths=[LABEL_W, LABEL_GAP_X, LABEL_W], rowHeights=[LABEL_H] * LABEL_ROWS)
         grid.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"),
                                   ("LEFTPADDING", (0, 0), (-1, -1), 0),
                                   ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-                                  ("TOPPADDING", (0, 0), (-1, -1), 4),
-                                  ("BOTTOMPADDING", (0, 0), (-1, -1), 4)]))
-        els.append(KeepTogether([grid]))  # safety net: whole page of labels or none, never split
+                                  ("TOPPADDING", (0, 0), (-1, -1), 0),
+                                  ("BOTTOMPADDING", (0, 0), (-1, -1), 0)]))
+        els.append(grid)
         if start + per_page < len(bags):
             els.append(PageBreak())
 
-    doc.build(els, canvasmaker=_make_canvas("Bag Labels", batch.code))
+    doc.build(els, canvasmaker=_make_canvas("Bag Labels", batch.code, margin=LABEL_SIDE_MARGIN, footer="minimal"))
     return buf.getvalue()
