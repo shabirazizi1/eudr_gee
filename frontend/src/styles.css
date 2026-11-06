@@ -99,7 +99,7 @@ textarea { resize: vertical; }
 .map { position: absolute; inset: 0; }
 .map-locate { position: absolute; z-index: 500; bottom: 12px; left: 12px; background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; cursor: pointer; font: inherit; font-size: 12px; }
 .map-label { background: rgba(255,255,255,0.92); border: 0; font-weight: 600; font-size: 11px; padding: 2px 6px; }
-.toggle-group { display: flex; gap: 8px; padding: 10px 16px 0; }
+.toggle-group { display: flex; gap: 8px; padding: 10px 16px 12px; }
 .toggle-btn { flex: 1; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; background: #fff; color: var(--ink); font: inherit; font-weight: 500; cursor: pointer; }
 .toggle-btn.active { border-color: var(--green); background: var(--green-soft); color: var(--green); }
 .toggle-btn:disabled { opacity: 0.5; cursor: not-allowed; }

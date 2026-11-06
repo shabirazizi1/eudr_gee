@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import L from 'leaflet'
 import '@geoman-io/leaflet-geoman-free'
+import { addReferenceLayers } from './mapLayers.js'
 
 const SATELLITE = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
 const STYLE = { color: '#d9f2b4', weight: 2.5, fillColor: '#d9f2b4', fillOpacity: 0.15 }
@@ -28,6 +29,7 @@ export default function FarmMap({
       maxZoom: 19, maxNativeZoom: 17, // Esri imagery tops out at 17 -- upscale rather than show blank tiles
       attribution: 'Imagery © Esri, Maxar, Earthstar Geographics',
     }).addTo(map)
+    addReferenceLayers(map)
 
     if (editable) {
       map.pm.addControls({

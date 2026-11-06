@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import L from 'leaflet'
+import { addReferenceLayers } from './mapLayers.js'
 
 const SATELLITE = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
 const STYLE = { color: '#ffe034', weight: 3, fillColor: '#ffe034', fillOpacity: 0.12 }
@@ -18,6 +19,7 @@ export default function BatchMap({ farms, height = 420 }) {
       maxZoom: 19, maxNativeZoom: 17,
       attribution: 'Imagery © Esri, Maxar, Earthstar Geographics',
     }).addTo(map)
+    addReferenceLayers(map)
     return () => { map.remove(); mapRef.current = null }
   }, [])
 
