@@ -137,25 +137,21 @@ textarea { resize: vertical; }
 .search { width: 220px; }
 .card-head select { width: auto; }
 
-/* mobile nav: hamburger + slide-in drawer, Earth Engine pill collapses to a dot */
-.menu-btn { display: none; background: none; border: 0; font-size: 20px; line-height: 1; cursor: pointer;
-  color: var(--ink); padding: 4px 6px; }
-.drawer-backdrop { display: none; }
+/* mobile nav: bottom tab bar + an Account sheet, Earth Engine pill collapses to a dot */
+:root { --tabbar-h: 56px; }
 .ee-dot { display: none; width: 9px; height: 9px; border-radius: 50%; background: currentColor; }
+.tabbar { display: none; }
+.account-backdrop { display: none; }
+.toggle-btn .label-short { display: none; }
+.draw-save-bar { display: none; }
 
 @media (max-width: 900px) {
   .login, .grid-capture { grid-template-columns: 1fr; }
   .kpis { grid-template-columns: 1fr 1fr; }
 
-  .menu-btn { display: inline-flex; }
   .topbar { padding: 12px 14px; }
-  .content { padding: 16px 14px 32px; }
-  .sidebar {
-    display: flex; position: fixed; inset: 0 auto 0 0; width: 240px; z-index: 1001;
-    transform: translateX(-100%); transition: transform 0.2s ease; box-shadow: 2px 0 16px rgba(0,0,0,0.3);
-  }
-  .sidebar.open { transform: translateX(0); }
-  .drawer-backdrop.open { display: block; position: fixed; inset: 0; background: rgba(20,16,10,0.4); z-index: 1000; }
+  .content { padding: 16px 14px calc(var(--tabbar-h) + env(safe-area-inset-bottom) + 20px); }
+  .sidebar { display: none; }
   .ee-pill .pill-text { display: none; }
   .ee-pill { padding: 6px; }
   .ee-pill .ee-dot { display: inline-block; }
@@ -164,12 +160,43 @@ textarea { resize: vertical; }
   .org { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 130px; }
   .org .pill { display: none; }
 
+  /* bottom tab bar, replacing the sidebar entirely on mobile */
+  .tabbar {
+    display: flex; position: fixed; left: 0; right: 0; bottom: 0; z-index: 900;
+    min-height: var(--tabbar-h); background: var(--card); border-top: 1px solid var(--line);
+    padding: 4px 2px calc(4px + env(safe-area-inset-bottom));
+  }
+  .tab-item {
+    flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 2px; padding: 4px 2px; color: var(--muted); text-decoration: none; font-size: 10px;
+    font-weight: 500; background: none; border: 0; font-family: inherit; cursor: pointer;
+  }
+  .tab-item .tab-icon { font-size: 20px; line-height: 1; }
+  .tab-item.active { color: var(--green); }
+
+  /* Account tab opens a bottom sheet instead of a route (there is no /account page) */
+  .account-backdrop { display: block; position: fixed; inset: 0; background: rgba(20,16,10,0.4); z-index: 1000; }
+  .account-sheet {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 1001; background: var(--card);
+    border-radius: 16px 16px 0 0; padding: 20px 20px calc(20px + env(safe-area-inset-bottom));
+    box-shadow: 0 -4px 20px rgba(0,0,0,0.18);
+  }
+  .account-sheet-user { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+
   /* page headers: stack title + actions, buttons go full-width */
   .page-head { flex-direction: column; align-items: stretch; gap: 10px; }
   .page-head .row { flex-direction: column; align-items: stretch; }
   .page-head .btn { width: 100%; }
   .row.gap { flex-wrap: wrap; }
   .row.gap .btn { flex: 1 1 140px; }
+
+  /* some button rows (batch detail actions) must NOT stretch to equal/tall heights --
+     fixed 48px height, 8px gap, no flex-grow */
+  .page-actions { flex-direction: column; align-items: stretch; gap: 8px !important; }
+  .page-actions .btn {
+    flex: none; height: 48px; display: flex; align-items: center; justify-content: center;
+    white-space: nowrap;
+  }
 
   /* 16px inputs everywhere on mobile avoids iOS Safari's auto-zoom-on-focus */
   input, select, textarea { font-size: 16px; }
@@ -181,25 +208,41 @@ textarea { resize: vertical; }
   .login-hero p { display: none; }
   .roles { grid-template-columns: 1fr; }
 
-  /* capture: map fills most of the screen height; walk mode gets a sticky bottom action bar.
-     Walk mode's map is shorter than the editor's -- it needs to leave room, above the fold,
-     for the always-visible accuracy/point-count readout and the fixed button bar below it. */
-  .capture-map-card .map-wrap { height: 55vh !important; }
-  .walk-map .map-wrap { height: 32vh !important; }
-  .toggle-btn { padding: 14px 10px; font-size: 15px; min-height: 48px; }
+  /* capture: map fills most of the screen height; walk mode gets a sticky action bar that sits
+     directly above the tab bar (not behind it). Walk mode's map is shorter than the editor's --
+     it needs to leave room, above the fold, for the always-visible accuracy/point-count readout
+     and the fixed button bar below it, now that the tab bar also eats into that budget. */
+  .capture-map-card .map-wrap { height: 42vh !important; }
+  .walk-map .map-wrap { height: 26vh !important; }
+  .toggle-btn { padding: 12px 8px; font-size: 15px; min-height: 48px; }
+  .toggle-btn .label-full { display: none; }
+  .toggle-btn .label-short { display: inline; }
   .walk-meta { font-size: 15px; }
   .walk-meta b { font-size: 19px; }
-  .walk-panel { padding-bottom: 140px !important; }
+  .walk-panel { padding-bottom: calc(var(--tabbar-h) + env(safe-area-inset-bottom) + 130px) !important; }
   .walk-actions {
-    position: fixed; left: 0; right: 0; bottom: 0; z-index: 400; margin: 0; gap: 8px;
+    position: fixed; left: 0; right: 0; z-index: 400; margin: 0; gap: 8px;
+    bottom: calc(var(--tabbar-h) + env(safe-area-inset-bottom));
     background: var(--card); border-top: 1px solid var(--line);
-    padding: 10px 14px calc(10px + env(safe-area-inset-bottom));
+    padding: 10px 14px;
   }
   .walk-actions .btn { flex: 1 1 auto; min-height: 48px; font-size: 14px; }
   .walk-actions .btn.primary { flex-basis: 100%; order: -1; }
 
-  /* result: verdict (above grid already) -> score card -> map -> evidence */
-  .grid-result { display: flex; flex-direction: column; }
+  /* draw mode (or a finished walk, still editable): a sticky "save" bar above the tab bar so
+     submitting doesn't need a scroll past the map every time. */
+  .capture-aside { padding-bottom: 80px; }
+  .draw-save-bar {
+    display: block; position: fixed; left: 0; right: 0; z-index: 400;
+    bottom: calc(var(--tabbar-h) + env(safe-area-inset-bottom));
+    background: var(--card); border-top: 1px solid var(--line); padding: 10px 14px;
+  }
+  .draw-save-bar .btn { height: 48px; display: flex; align-items: center; justify-content: center; }
+  .draw-save-bar .btn:not(.ready) { opacity: 0.55; }
+
+  /* result (and batch detail, which reuses .grid-result for its map + QR cards):
+     verdict (above grid already) -> score card -> map -> evidence, every card full width */
+  .grid-result { display: flex; flex-direction: column; align-items: stretch; }
   .result-score { order: 1; }
   .result-map { order: 2; }
 

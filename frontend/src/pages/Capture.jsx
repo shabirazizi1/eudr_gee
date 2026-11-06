@@ -65,6 +65,8 @@ export default function Capture() {
   const samplingRef = useRef(false)
   const samplesRef = useRef([])
   const lastReadingRef = useRef(null) // most recent watchPosition reading: { lat, lon, accuracy, timestamp }
+  const nameRef = useRef(null)
+  const farmerRef = useRef(null)
 
   const walking = mode === 'walk' && !walkFinished
   const showEditor = !walking // draw mode, or a finished walk -- same editable FarmMap either way
@@ -204,6 +206,15 @@ export default function Capture() {
     setPointNotice(null)
   }
 
+  // Mobile-only sticky save bar: stays clickable even when "not ready" (styled greyed-out, not
+  // actually disabled) so a tap can scroll to whichever required field is still empty.
+  const stickySave = () => {
+    if (!stats?.valid || stats.vertices < 3 || busy) return
+    if (!form.name.trim()) { nameRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }); nameRef.current?.focus(); return }
+    if (!form.farmer_name.trim()) { farmerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }); farmerRef.current?.focus(); return }
+    submit(true)
+  }
+
   const submit = async (runCheck) => {
     setError(''); setNotice('')
     const body = {
@@ -262,11 +273,11 @@ export default function Capture() {
           <div className="toggle-group">
             <button type="button" className={`toggle-btn ${mode === 'draw' ? 'active' : ''}`}
               disabled={walking && walkPoints.length > 0} onClick={() => switchMode('draw')}>
-              ✎ Draw on map
+              ✎ <span className="label-full">Draw on map</span><span className="label-short">Draw</span>
             </button>
             <button type="button" className={`toggle-btn ${mode === 'walk' ? 'active' : ''}`}
               onClick={() => switchMode('walk')}>
-              ◎ Walk the boundary
+              ◎ <span className="label-full">Walk the boundary</span><span className="label-short">Walk</span>
             </button>
           </div>
 
@@ -310,13 +321,13 @@ export default function Capture() {
           )}
         </section>
 
-        <aside className="stack">
+        <aside className="stack capture-aside">
           <section className="card pad">
             <b>Farm details</b>
             <label className="field-label">Farm name *</label>
-            <input value={form.name} onChange={set('name')} placeholder="Adom Cocoa Farm" />
+            <input ref={nameRef} value={form.name} onChange={set('name')} placeholder="Adom Cocoa Farm" />
             <label className="field-label">Farmer name *</label>
-            <input value={form.farmer_name} onChange={set('farmer_name')} placeholder="Ama Mensah" />
+            <input ref={farmerRef} value={form.farmer_name} onChange={set('farmer_name')} placeholder="Ama Mensah" />
             <label className="field-label">Village / community</label>
             <input value={form.village} onChange={set('village')} placeholder="Asankrangwa" />
             <label className="field-label">Last harvest date</label>
@@ -362,6 +373,15 @@ export default function Capture() {
           <p className="muted small">Draft saved locally {savedAt ? new Date(savedAt).toLocaleTimeString() : ''}</p>
         </aside>
       </div>
+
+      {showEditor && (
+        <div className="draw-save-bar">
+          <button type="button" className={`btn primary wide ${canSubmit ? 'ready' : ''}`}
+            onClick={stickySave}>
+            {busy || 'Save & run check →'}
+          </button>
+        </div>
+      )}
     </div>
   )
 }

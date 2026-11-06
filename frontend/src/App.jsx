@@ -19,12 +19,19 @@ export function getUser() {
   try { return JSON.parse(localStorage.getItem('eudr_user')) } catch { return null }
 }
 
+const TABS = [
+  { to: '/dashboard', icon: '🏠', label: 'Overview' },
+  { to: '/capture', icon: '✎', label: 'Capture' },
+  { to: '/farms', icon: '🛰', label: 'Farms' },
+  { to: '/batches', icon: '📦', label: 'Batches' },
+]
+
 function Shell({ user, children }) {
   const nav = useNavigate()
   const [mode, setMode] = useState(null)
   const [pending, setPending] = useState(outboxCount())
   const [online, setOnline] = useState(navigator.onLine)
-  const [drawerOpen, setDrawerOpen] = useState(false)
+  const [accountOpen, setAccountOpen] = useState(false)
 
   useEffect(() => {
     api.health().then((h) => setMode(h.mode)).catch(() => setMode('offline'))
@@ -52,8 +59,7 @@ function Shell({ user, children }) {
 
   return (
     <div className="shell">
-      <div className={`drawer-backdrop ${drawerOpen ? 'open' : ''}`} onClick={() => setDrawerOpen(false)} />
-      <aside className={`sidebar ${drawerOpen ? 'open' : ''}`} onClick={() => setDrawerOpen(false)}>
+      <aside className="sidebar">
         <div className="brand"><span className="brand-mark">❦</span> COCOA INTELLIGENCE</div>
         <div className="nav-label">WORKSPACE</div>
         <NavLink to="/dashboard" className="nav-item">Overview</NavLink>
@@ -67,10 +73,7 @@ function Shell({ user, children }) {
       </aside>
       <div className="main">
         <header className="topbar">
-          <div className="row" style={{ gap: 10 }}>
-            <button type="button" className="menu-btn" aria-label="Open menu" onClick={() => setDrawerOpen(true)}>☰</button>
-            <div className="org">Koa Cocoa Collective <span className="pill">Demo workspace</span></div>
-          </div>
+          <div className="org">Koa Cocoa Collective <span className="pill">Demo workspace</span></div>
           <div className="topbar-right">
             {!online && <span className="pill warn">Offline</span>}
             {pending > 0 && <span className="pill warn">{pending} draft(s) waiting to sync</span>}
@@ -90,6 +93,33 @@ function Shell({ user, children }) {
         </header>
         <main className="content">{children}</main>
       </div>
+
+      <nav className="tabbar">
+        {TABS.map((t) => (
+          <NavLink key={t.to} to={t.to} className="tab-item">
+            <span className="tab-icon">{t.icon}</span>
+            <span>{t.label}</span>
+          </NavLink>
+        ))}
+        <button type="button" className={`tab-item ${accountOpen ? 'active' : ''}`} onClick={() => setAccountOpen(true)}>
+          <span className="tab-icon">👤</span>
+          <span>Account</span>
+        </button>
+      </nav>
+
+      {accountOpen && (
+        <div className="account-backdrop" onClick={() => setAccountOpen(false)}>
+          <div className="account-sheet" onClick={(e) => e.stopPropagation()}>
+            <div className="account-sheet-user">
+              <div className="avatar">{initials}</div>
+              <div><b>{user.name}</b><br /><small className="muted">{ROLES[user.role]}</small></div>
+            </div>
+            <button className="btn wide" onClick={logout}>Sign out</button>
+            <button className="link-btn small center" style={{ width: '100%', marginTop: 10 }}
+              onClick={() => setAccountOpen(false)}>Close</button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

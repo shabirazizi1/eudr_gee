@@ -38,7 +38,7 @@ export default function BatchDetail() {
             {batch.created_by ? ` by ${batch.created_by}` : ''}
           </p>
         </div>
-        <div className="row gap">
+        <div className="row gap page-actions">
           <a className="btn" href={api.bagLabelsUrl(batch.id)}>🏷 Print bag labels</a>
           <a className="btn primary" href={api.batchReportUrl(batch.id)}>⤓ Export shipment compliance package</a>
         </div>
