@@ -104,9 +104,13 @@ npm run dev:phone   # vite --host --mode phone (adds @vitejs/plugin-basic-ssl)
 An alternative to §1/§4 — runs the whole app (backend + frontend) in containers.
 
 ```bash
-cp backend/.env.example backend/.env   # first time only, if you don't already have one
 docker compose up --build
 ```
+
+That's it — no setup step. `backend/.env.example` ships sensible defaults (`GEE_PROJECT`,
+`ALLOW_MOCK_FALLBACK=true`, ...) baked into `docker-compose.yml`'s `env_file`, so a fresh
+`git clone` works straight away. If you want your own Earth Engine project or different settings,
+copy it to `backend/.env` (gitignored) and edit — anything it sets overrides the defaults.
 
 Open **http://localhost:8080**. The SQLite DB and `uploads/` live in a named Docker volume
 (`db_data`) so data survives `docker compose down` / restarts, and demo farms are seeded
@@ -120,7 +124,7 @@ farm list is just empty until that background seed run finishes.
   checks use real Earth Engine (`source: "gee"` in the verify result).
 - **Without Earth Engine credentials**: if that folder doesn't exist, or the mounted credentials
   are invalid/expired, Earth Engine calls fail and the backend falls back to a clearly-labelled
-  **MOCK** result (`ALLOW_MOCK_FALLBACK=true` in `backend/.env`) — the UI always shows which source
+  **MOCK** result (`ALLOW_MOCK_FALLBACK=true` by default) — the UI always shows which source
   produced a result, real results are never presented as mock or vice versa.
 
 Stop with `docker compose down` (add `-v` to also delete the DB volume and start fresh).

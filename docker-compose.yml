@@ -2,7 +2,12 @@ services:
   backend:
     build: ./backend
     env_file:
-      - backend/.env
+      # .env.example ships sensible defaults (GEE_PROJECT, ALLOW_MOCK_FALLBACK=true, ...) so a
+      # fresh clone works with no setup step; backend/.env (gitignored, optional) overrides them
+      # for a personal Earth Engine project or local tweaks -- later files win on shared keys.
+      - backend/.env.example
+      - path: backend/.env
+        required: false
     environment:
       - DB_URL=sqlite:////data/eudr.db
       - UPLOADS_DIR=/data/uploads
