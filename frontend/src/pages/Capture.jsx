@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router-dom'
 import area from '@turf/area'
 import length from '@turf/length'
 import kinks from '@turf/kinks'
@@ -55,13 +55,26 @@ function buildGeometry(points) {
 
 export default function Capture() {
   const nav = useNavigate()
-  const draft = loadDraft()
+  const { id: remapFarmId } = useParams() // set only on /farms/:id/remap (issue #4)
+  const isRemap = Boolean(remapFarmId)
+  const draft = isRemap ? null : loadDraft() // remap never touches the new-farm draft
   const [form, setForm] = useState(draft?.form || EMPTY)
   const [geometry, setGeometry] = useState(draft?.geometry || null)
   const [savedAt, setSavedAt] = useState(draft?.savedAt || null)
   const [busy, setBusy] = useState('')
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const [remapFarm, setRemapFarm] = useState(null)
+
+  useEffect(() => {
+    if (!isRemap) return
+    api.farm(remapFarmId).then((f) => {
+      setRemapFarm(f)
+      setGeometry(f.geometry)
+      setCaptureMethod(f.capture_method)
+    }).catch((e) => setError(e.message))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isRemap, remapFarmId])
 
   // Farmer consent (issue #7): attestation (checkbox + agent + date) is required; a signed-form
   // photo is optional on top. Farms cannot be saved -- online, offline, or via the sticky bar --
@@ -92,6 +105,7 @@ export default function Capture() {
   // Auto-save draft locally on every change (works with no signal) -- includes walked points so a
   // lost GPS signal or a page reload during a walk doesn't lose captured vertices.
   useEffect(() => {
+    if (isRemap) return // remapping an existing farm never persists to the new-farm draft
     const t = new Date().toISOString()
     try {
       localStorage.setItem(DRAFT_KEY, JSON.stringify({
@@ -100,7 +114,7 @@ export default function Capture() {
       }))
     } catch { /* ignore */ }
     setSavedAt(t)
-  }, [form, geometry, mode, walkPoints, walkFinished, captureMethod, consentGiven, consentDate, consentPhoto])
+  }, [isRemap, form, geometry, mode, walkPoints, walkFinished, captureMethod, consentGiven, consentDate, consentPhoto])
 
   // Keep `geometry` in sync with the walked points while actively walking
   useEffect(() => {
@@ -146,8 +160,9 @@ export default function Capture() {
   const flaggedCount = useMemo(() => walkPoints.filter((p) => p.flagged).length, [walkPoints])
 
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value })
-  const canSubmit = form.name && form.farmer_name && stats?.valid && stats.vertices >= 3
-    && consentGiven && consentDate
+  const canSubmit = isRemap
+    ? stats?.valid && stats.vertices >= 3
+    : form.name && form.farmer_name && stats?.valid && stats.vertices >= 3 && consentGiven && consentDate
 
   const onConsentPhoto = async (e) => {
     const file = e.target.files?.[0]
@@ -172,6 +187,7 @@ export default function Capture() {
   }
 
   const clearDraft = () => {
+    if (isRemap) { resetBoundary(); return } // never touches the shared new-farm draft
     localStorage.removeItem(DRAFT_KEY)
     setForm(EMPTY)
     setModeState('draw')
@@ -239,14 +255,41 @@ export default function Capture() {
   // actually disabled) so a tap can scroll to whichever required field is still empty.
   const stickySave = () => {
     if (!stats?.valid || stats.vertices < 3 || busy) return
-    if (!form.name.trim()) { nameRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }); nameRef.current?.focus(); return }
-    if (!form.farmer_name.trim()) { farmerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }); farmerRef.current?.focus(); return }
-    if (!consentGiven || !consentDate) { consentRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }); return }
+    if (!isRemap) {
+      if (!form.name.trim()) { nameRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }); nameRef.current?.focus(); return }
+      if (!form.farmer_name.trim()) { farmerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }); farmerRef.current?.focus(); return }
+      if (!consentGiven || !consentDate) { consentRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }); return }
+    }
     submit(true)
+  }
+
+  const submitRemap = async (runCheck) => {
+    const body = {
+      geometry,
+      captured_by: getUser()?.name || '',
+      capture_method: captureMethod,
+      gps_accuracy_m: avgAccuracy !== null ? Math.round(avgAccuracy * 10) / 10 : null,
+      flagged_points: flaggedCount,
+    }
+    if (!navigator.onLine) { setError("You're offline — reconnect to save this remap."); return }
+    try {
+      setBusy('Saving new boundary…')
+      await api.remapFarm(remapFarmId, body)
+      if (runCheck) {
+        setBusy('Running satellite check (can take 10–40 s)…')
+        await api.verify(remapFarmId)
+      }
+      nav(`/farms/${remapFarmId}`)
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setBusy('')
+    }
   }
 
   const submit = async (runCheck) => {
     setError(''); setNotice('')
+    if (isRemap) { await submitRemap(runCheck); return }
     const body = {
       ...form,
       harvest_date: form.harvest_date || null,
@@ -288,11 +331,16 @@ export default function Capture() {
 
   return (
     <div>
-      <div className="crumbs">Farm registry / New farm / Boundary capture</div>
+      <div className="crumbs">Farm registry / {isRemap ? remapFarm?.name || 'Remap' : 'New farm'} / Boundary capture</div>
       <div className="page-head">
         <div>
-          <h1>Map the farm. Ground the evidence.</h1>
-          <p className="muted">Capture a precise boundary before satellite screening.</p>
+          <h1>{isRemap ? 'Remap the boundary.' : 'Map the farm. Ground the evidence.'}</h1>
+          <p className="muted">
+            {isRemap
+              ? `New boundary for ${remapFarm?.name || 'this farm'} (${remapFarm?.code || ''}). ` +
+                'Saving creates a new version -- the old one is kept, and the farm is re-screened as Not screened.'
+              : 'Capture a precise boundary before satellite screening.'}
+          </p>
         </div>
       </div>
 
@@ -355,33 +403,46 @@ export default function Capture() {
         </section>
 
         <aside className="stack capture-aside">
-          <section className="card pad">
-            <b>Farm details</b>
-            <label className="field-label">Farm name *</label>
-            <input ref={nameRef} value={form.name} onChange={set('name')} placeholder="Adom Cocoa Farm" />
-            <label className="field-label">Farmer name *</label>
-            <input ref={farmerRef} value={form.farmer_name} onChange={set('farmer_name')} placeholder="Ama Mensah" />
-            <label className="field-label">Village / community</label>
-            <input value={form.village} onChange={set('village')} placeholder="Asankrangwa" />
-            <label className="field-label">Last harvest date</label>
-            <input type="date" value={form.harvest_date} onChange={set('harvest_date')} />
-          </section>
+          {isRemap ? (
+            <section className="card pad">
+              <b>Remapping an existing farm</b>
+              <p className="small muted" style={{ marginTop: 6 }}>
+                Name, farmer and consent stay as they are on {remapFarm?.name || 'this farm'} --
+                remapping only replaces the boundary. A new, read-only version is kept alongside
+                every earlier one.
+              </p>
+            </section>
+          ) : (
+            <>
+              <section className="card pad">
+                <b>Farm details</b>
+                <label className="field-label">Farm name *</label>
+                <input ref={nameRef} value={form.name} onChange={set('name')} placeholder="Adom Cocoa Farm" />
+                <label className="field-label">Farmer name *</label>
+                <input ref={farmerRef} value={form.farmer_name} onChange={set('farmer_name')} placeholder="Ama Mensah" />
+                <label className="field-label">Village / community</label>
+                <input value={form.village} onChange={set('village')} placeholder="Asankrangwa" />
+                <label className="field-label">Last harvest date</label>
+                <input type="date" value={form.harvest_date} onChange={set('harvest_date')} />
+              </section>
 
-          <section className="card pad" ref={consentRef}>
-            <b>Farmer consent *</b>
-            <label className="row gap" style={{ marginTop: 8, alignItems: 'flex-start' }}>
-              <input type="checkbox" checked={consentGiven} onChange={(e) => setConsentGiven(e.target.checked)} />
-              <span className="small">
-                The farmer has given consent to collect and share their personal and location
-                data for this registration. Recorded by {getUser()?.name || 'this agent'}.
-              </span>
-            </label>
-            <label className="field-label">Consent date *</label>
-            <input type="date" value={consentDate} onChange={(e) => setConsentDate(e.target.value)} />
-            <label className="field-label">Signed consent form photo (optional)</label>
-            <input type="file" accept="image/*" capture="environment" onChange={onConsentPhoto} />
-            {consentPhoto && <p className="small ok-text">✓ Photo attached</p>}
-          </section>
+              <section className="card pad" ref={consentRef}>
+                <b>Farmer consent *</b>
+                <label className="row gap" style={{ marginTop: 8, alignItems: 'flex-start' }}>
+                  <input type="checkbox" checked={consentGiven} onChange={(e) => setConsentGiven(e.target.checked)} />
+                  <span className="small">
+                    The farmer has given consent to collect and share their personal and location
+                    data for this registration. Recorded by {getUser()?.name || 'this agent'}.
+                  </span>
+                </label>
+                <label className="field-label">Consent date *</label>
+                <input type="date" value={consentDate} onChange={(e) => setConsentDate(e.target.value)} />
+                <label className="field-label">Signed consent form photo (optional)</label>
+                <input type="file" accept="image/*" capture="environment" onChange={onConsentPhoto} />
+                {consentPhoto && <p className="small ok-text">✓ Photo attached</p>}
+              </section>
+            </>
+          )}
 
           <section className="card pad">
             <div className="card-head tight"><b>Captured boundary</b><small className="muted">WGS 84</small></div>
@@ -414,12 +475,14 @@ export default function Capture() {
             {error && <p className="small bad-text">{error}</p>}
             {notice && <p className="small notice">{notice}</p>}
             <button className="btn primary wide" disabled={!canSubmit || !!busy} onClick={() => submit(true)}>
-              {busy || 'Save & run satellite check →'}
+              {busy || (isRemap ? 'Save new boundary & run check →' : 'Save & run satellite check →')}
             </button>
             <button className="btn wide" disabled={!canSubmit || !!busy} onClick={() => submit(false)}>Save only</button>
-            <button className="link-btn small" onClick={clearDraft}>Clear draft</button>
+            <button className="link-btn small" onClick={clearDraft}>{isRemap ? 'Reset boundary' : 'Clear draft'}</button>
           </section>
-          <p className="muted small">Draft saved locally {savedAt ? new Date(savedAt).toLocaleTimeString() : ''}</p>
+          {!isRemap && (
+            <p className="muted small">Draft saved locally {savedAt ? new Date(savedAt).toLocaleTimeString() : ''}</p>
+          )}
         </aside>
       </div>
 

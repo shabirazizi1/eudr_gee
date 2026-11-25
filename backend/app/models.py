@@ -35,9 +35,29 @@ class Farm(SQLModel, table=True):
     consent_photo_path: Optional[str] = None  # filename under uploads/consent/; never returned by farm_out()
 
 
+class BoundaryVersion(SQLModel, table=True):
+    """HLR / charter success criterion (issue #4): remapping a farm never overwrites its
+    boundary -- it appends a new, read-only version. Version 1 is created alongside the farm;
+    `POST /farms/{id}/remap` creates every version after that.
+    """
+    id: Optional[int] = Field(default=None, primary_key=True)
+    farm_id: int = Field(foreign_key="farm.id", index=True)
+    version_no: int
+    geometry: str  # GeoJSON Polygon as a JSON string (WGS84)
+    area_ha: float = 0.0
+    perimeter_m: float = 0.0
+    vertices: int = 0
+    capture_method: str = "drawn"  # "gps_walk" or "drawn"
+    gps_accuracy_m: Optional[float] = None
+    flagged_points: int = 0
+    captured_by: str = ""
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 class Verification(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     farm_id: int = Field(foreign_key="farm.id", index=True)
+    boundary_version_id: Optional[int] = Field(default=None, foreign_key="boundaryversion.id", index=True)
     run_id: str
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     source: str  # "gee" or "mock"
@@ -61,6 +81,9 @@ class BatchContribution(SQLModel, table=True):
     farm_id: int = Field(foreign_key="farm.id", index=True)
     bags: int
     kg_per_bag: float = 64.0
+    # The boundary version the farm was on when it joined this batch (issue #4): a later remap
+    # must not change what an already-shipped batch shows.
+    boundary_version_id: Optional[int] = Field(default=None, foreign_key="boundaryversion.id")
 
 
 class Bag(SQLModel, table=True):

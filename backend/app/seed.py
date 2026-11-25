@@ -13,8 +13,8 @@ from sqlmodel import Session, SQLModel, select
 
 from . import geo
 from .db import engine, init_db
-from .main import create_bags  # reuse the same bag-numbering logic the API uses
-from .models import Batch, BatchContribution, Farm
+from .main import create_bags, create_boundary_version, latest_boundary_version  # reuse API logic
+from .models import Batch, BatchContribution, BoundaryVersion, Farm
 
 DEMO = [
     # name, farmer, village, centre (lat, lon), radius (m), vertices, capture_method, gps_accuracy_m, flagged_points
@@ -71,8 +71,38 @@ def main():
             s.add(f)
             created.append(f)
         s.commit()
+        for f in created:
+            create_boundary_version(s, f)  # v1 for every newly created demo farm (issue #4)
         ids = [f.id for f in created]
     print(f"Added {len(ids)} demo farms.")
+
+    # Give one farm a second boundary version (GPS-walk remap) so the version-history panel has
+    # something to show in the demo (issue #4). Guarded by version_no==2 so a re-run without
+    # --reset doesn't pile up more versions.
+    with Session(engine) as s:
+        benso = s.exec(select(Farm).where(Farm.name == "Benso Cocoa Farm")).first()
+        already_v2 = benso and s.exec(
+            select(BoundaryVersion).where(BoundaryVersion.farm_id == benso.id, BoundaryVersion.version_no == 2)
+        ).first()
+        if benso and not already_v2:
+            g2 = ring(5.7950, -2.4520, 115, 6)  # the farmer bought a neighbouring plot
+            benso.geometry = json.dumps(g2)
+            benso.area_ha = round(geo.area_ha(g2), 2)
+            benso.perimeter_m = round(geo.perimeter_m(g2), 1)
+            benso.vertices = 6
+            benso.capture_method = "gps_walk"
+            benso.gps_accuracy_m = 5.5
+            benso.flagged_points = 0
+            benso.captured_by = "Demo seed (remap)"
+            benso.status = "Not screened"
+            benso.risk_score = None
+            benso.risk_level = None
+            benso.last_screened = None
+            s.add(benso)
+            s.commit()
+            s.refresh(benso)
+            create_boundary_version(s, benso)
+            print(f"  {benso.code} Benso Cocoa Farm: remapped to v2 (GPS walk, neighbouring plot added).")
 
     if "--verify" in sys.argv:
         from fastapi.testclient import TestClient
@@ -98,8 +128,10 @@ def main():
                     total_bags = 0
                     for f in low_farms:
                         bags = BATCH_BAGS.get(f.name, 15)
+                        current_version = latest_boundary_version(s, f.id)
                         contribution = BatchContribution(batch_id=batch.id, farm_id=f.id,
-                                                          bags=bags, kg_per_bag=64.0)
+                                                          bags=bags, kg_per_bag=64.0,
+                                                          boundary_version_id=current_version.id if current_version else None)
                         s.add(contribution)
                         s.commit()
                         s.refresh(contribution)

@@ -267,7 +267,11 @@ def _boundary_table_compact(geo: dict, max_rows_per_group=6, max_groups=3,
 
 # ---------------------------------------------------------------- single-farm evidence report
 
-def build_pdf(farm, verification, reviews=None) -> bytes:
+def build_pdf(farm, verification, reviews=None, geometry=None, boundary_version_no=None,
+              facts_override=None) -> bytes:
+    """`geometry`/`facts_override` (issue #4) let the caller render the boundary version the
+    verification was actually run against, rather than the farm's current one, which can differ
+    after a remap that hasn't been re-verified yet. Both default to the farm's current state."""
     res = json.loads(verification.result_json)
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=A4, title=f"Evidence report {farm.code}",
@@ -286,9 +290,10 @@ def build_pdf(farm, verification, reviews=None) -> bytes:
     els.append(Paragraph("Deforestation-Free Evidence Report", h1))
     els.append(Paragraph(
         f"{farm.name} · {farm.code} · {farmer_initials} · {_place('', farm.region)}", body))
+    boundary_label = f" · Boundary v{boundary_version_no}" if boundary_version_no else ""
     els.append(Paragraph(
         f"Run {verification.run_id} · {verification.created_at:%d %b %Y %H:%M} UTC · "
-        f"Data source: {verification.source.upper()}", small))
+        f"Data source: {verification.source.upper()}{boundary_label}", small))
     els.append(Spacer(1, 5))
 
     color = LEVEL_COLORS.get(verification.level, "#333333")
@@ -303,8 +308,9 @@ def build_pdf(farm, verification, reviews=None) -> bytes:
             "No post-2020 tree-cover loss, protected-area overlap or vegetation decline detected.", body))
     els.append(Spacer(1, 5))
 
-    geo = json.loads(farm.geometry)
-    t = _facts_table(farm.model_dump(), res, col_widths=(38 * mm, 44 * mm))
+    geo = geometry if geometry is not None else json.loads(farm.geometry)
+    facts_farm = {**farm.model_dump(), **(facts_override or {})}
+    t = _facts_table(facts_farm, res, col_widths=(38 * mm, 44 * mm))
     gallery, has_real_map, legend_source = _map_pair_flowable(geo, caption, cell_w=42 * mm, max_h=56 * mm)
     els.append(Table([[gallery, t]], colWidths=[86 * mm, 84 * mm]))
     if has_real_map:
@@ -497,6 +503,8 @@ def build_batch_pdf(batch, data: dict) -> bytes:
         capture = "GPS walk" if f.get("capture_method") == "gps_walk" else "Drawn on map"
         risk = f"{v['score']} ({v['level']})" if v else "Not screened"
         run = f"{v['run_id']} · {v['created_at'][:10]}" if v else "–"
+        if f.get("boundary_version"):
+            run += f" · Boundary v{f['boundary_version']}"
         rows.append([
             Paragraph(f["code"], cell), Paragraph(f["farmer_name"], cell),
             Paragraph(f"{f['area_ha']:.2f} ha", cell), Paragraph(risk, cell),
@@ -531,8 +539,10 @@ def build_batch_pdf(batch, data: dict) -> bytes:
             continue
         els.append(PageBreak())
         els.append(Paragraph(f"Appendix · {f['name']}", h1))
+        boundary_label = f" · Boundary v{f['boundary_version']}" if f.get("boundary_version") else ""
         els.append(Paragraph(
-            f"{f['code']} · {f['farmer_name']} · {_place(f.get('village', ''), f.get('region', ''))}", body))
+            f"{f['code']} · {f['farmer_name']} · {_place(f.get('village', ''), f.get('region', ''))}"
+            f"{boundary_label}", body))
 
         res = f.get("verification") or {}
         if res:

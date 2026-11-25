@@ -179,6 +179,92 @@ def test_review_confirm_blocks_batch_join(client, mock_screen):
     assert batch.status_code == 422
 
 
+# ---------------------------------------------------------------- boundary history (issue #4)
+
+def test_create_farm_creates_v1(client):
+    farm = client.post("/api/farms", json=VALID_FARM).json()
+    assert farm["boundary_version"] == 1
+
+    versions = client.get(f"/api/farms/{farm['id']}/boundary_versions").json()
+    assert len(versions) == 1
+    assert versions[0]["version_no"] == 1
+    assert versions[0]["geometry"] == farm["geometry"]
+
+
+def test_remap_creates_v2_with_v1_unchanged(client):
+    farm = client.post("/api/farms", json=VALID_FARM).json()
+    v1_geometry = farm["geometry"]
+
+    r = client.post(f"/api/farms/{farm['id']}/remap", json={
+        "geometry": make_polygon(cx=-2.431, cy=5.801), "capture_method": "gps_walk",
+        "gps_accuracy_m": 5.0, "flagged_points": 0, "captured_by": "Field Agent 2",
+    })
+    assert r.status_code == 200
+    body = r.json()
+    assert body["boundary_version"] == 2
+    assert body["geometry"] != v1_geometry
+    assert body["capture_method"] == "gps_walk"
+
+    versions = client.get(f"/api/farms/{farm['id']}/boundary_versions").json()
+    assert len(versions) == 2
+    assert versions[0]["version_no"] == 1
+    assert versions[0]["geometry"] == v1_geometry  # read-only: untouched by the remap
+    assert versions[1]["version_no"] == 2
+    assert versions[1]["geometry"] == body["geometry"]
+
+
+def test_remap_rejects_self_intersecting_polygon(client):
+    farm = client.post("/api/farms", json=VALID_FARM).json()
+    r = client.post(f"/api/farms/{farm['id']}/remap", json={
+        "geometry": {"type": "Polygon", "coordinates": [[[0, 0], [1, 1], [1, 0], [0, 1], [0, 0]]]},
+    })
+    assert r.status_code == 422
+    # the bad attempt must not have created a new version
+    assert len(client.get(f"/api/farms/{farm['id']}/boundary_versions").json()) == 1
+
+
+def test_remap_resets_status_and_blocks_batching(client, mock_screen):
+    verified = create_verified_farm(client, mock_screen)
+    assert verified["status"] == "Verified"
+
+    remapped = client.post(f"/api/farms/{verified['id']}/remap", json={
+        "geometry": make_polygon(cx=-2.432, cy=5.802),
+    }).json()
+    assert remapped["status"] == "Not screened"
+    assert remapped["risk_score"] is None
+
+    r = client.post("/api/batches", json={"contributions": [{"farm_id": verified["id"], "bags": 5}]})
+    assert r.status_code == 422
+
+
+def test_verification_links_to_the_boundary_version_it_screened(client, mock_screen):
+    farm = client.post("/api/farms", json=VALID_FARM).json()
+    v1 = client.post(f"/api/farms/{farm['id']}/verify").json()
+    assert v1["verification"]["run_id"]
+    assert v1["boundary_version"] == 1
+
+    client.post(f"/api/farms/{farm['id']}/remap", json={"geometry": make_polygon(cx=-2.433, cy=5.803)})
+    v2 = client.post(f"/api/farms/{farm['id']}/verify").json()
+    assert v2["boundary_version"] == 2
+
+
+def test_batch_keeps_the_boundary_version_it_was_built_with(client, mock_screen):
+    verified = create_verified_farm(client, mock_screen)
+    batch = client.post("/api/batches", json={
+        "contributions": [{"farm_id": verified["id"], "bags": 5}],
+    }).json()
+    v1_geometry = batch["contributions"][0]["farm"]["geometry"]
+    assert batch["contributions"][0]["farm"]["boundary_version"] == 1
+
+    client.post(f"/api/farms/{verified['id']}/remap", json={"geometry": make_polygon(cx=-2.434, cy=5.804)})
+
+    got = client.get(f"/api/batches/{batch['id']}").json()
+    assert got["contributions"][0]["farm"]["boundary_version"] == 1
+    assert got["contributions"][0]["farm"]["geometry"] == v1_geometry
+    # the live farm record itself did move on
+    assert client.get(f"/api/farms/{verified['id']}").json()["boundary_version"] == 2
+
+
 # ---------------------------------------------------------------- bags (public QR target)
 
 def test_bag_lookup_and_404(client, mock_screen):

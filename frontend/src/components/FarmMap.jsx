@@ -14,13 +14,14 @@ const STYLE = { color: '#d9f2b4', weight: 2.5, fillColor: '#d9f2b4', fillOpacity
  */
 export default function FarmMap({
   editable = false, geometry, onChange, overlayUrl, label, boundaryStyle, height = 460,
-  mode, walkPoints, livePosition,
+  mode, walkPoints, livePosition, extraLayers,
 }) {
   const el = useRef(null)
   const mapRef = useRef(null)
   const layerRef = useRef(null)
   const walkLayerRef = useRef(null)
   const liveLayerRef = useRef(null)
+  const extraLayersRef = useRef(null)
 
   useEffect(() => {
     const map = L.map(el.current, { zoomControl: true }).setView([5.808, -2.4335], 15)
@@ -85,6 +86,25 @@ export default function FarmMap({
     const overlay = L.tileLayer(overlayUrl, { opacity: 0.85 }).addTo(map)
     return () => map.removeLayer(overlay)
   }, [overlayUrl])
+
+  // Read-only extra boundaries (e.g. the boundary-history panel's older, dashed versions).
+  // Runs after the main `geometry` effect above, so it can extend the fitted bounds to include them.
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return
+    if (extraLayersRef.current) { map.removeLayer(extraLayersRef.current); extraLayersRef.current = null }
+    if (!extraLayers?.length) return
+    const group = L.layerGroup()
+    let bounds = layerRef.current ? layerRef.current.getBounds() : null
+    extraLayers.forEach(({ geometry: g, style }) => {
+      const layer = L.geoJSON(g, { style: style || STYLE })
+      layer.addTo(group)
+      bounds = bounds ? bounds.extend(layer.getBounds()) : layer.getBounds()
+    })
+    group.addTo(map)
+    extraLayersRef.current = group
+    if (bounds) map.fitBounds(bounds, { padding: [40, 40], maxZoom: 17 })
+  }, [extraLayers])
 
   // Walk mode: provisional path/polygon + a marker per captured point
   useEffect(() => {
