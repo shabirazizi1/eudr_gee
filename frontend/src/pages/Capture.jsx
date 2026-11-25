@@ -33,18 +33,24 @@ const mean = (xs) => xs.reduce((s, x) => s + x, 0) / xs.length
 
 // watchPosition doesn't fire again once the device stops moving, so a single reading on demand
 // (used as a last-resort fallback when the 3 s window collects nothing) needs its own call.
+// Resolves { errorCode } instead of null on failure so callers can tell "permission denied"
+// (code 1) apart from a real timeout/no-signal (codes 2/3).
 function getPositionOnce() {
   return new Promise((resolve) => {
-    if (!navigator.geolocation) { resolve(null); return }
+    if (!navigator.geolocation) { resolve({ errorCode: 2 }); return }
     navigator.geolocation.getCurrentPosition(
       (pos) => resolve({
         lat: pos.coords.latitude, lon: pos.coords.longitude, accuracy: pos.coords.accuracy, timestamp: Date.now(),
       }),
-      () => resolve(null),
+      (err) => resolve({ errorCode: err.code }),
       { enableHighAccuracy: true, maximumAge: 0, timeout: 10000 },
     )
   })
 }
+
+const BLOCKED_LOCATION_MESSAGE = "Location access is blocked. Allow location for this site in your browser's site settings, then reload."
+const NO_SIGNAL_MESSAGE = 'No GPS reading. Move to open sky and try again.'
+const WEAK_SIGNAL_MESSAGE = 'GPS too weak. Move to open sky and try again.'
 
 function buildGeometry(points) {
   if (points.length < 3) return null
@@ -105,6 +111,7 @@ export default function Capture() {
   const samplingRef = useRef(false)
   const samplesRef = useRef([])
   const lastReadingRef = useRef(null) // most recent watchPosition reading: { lat, lon, accuracy, timestamp }
+  const lastGpsErrorCodeRef = useRef(null) // most recent GeolocationPositionError.code (1 = denied)
   const nameRef = useRef(null)
   const farmerRef = useRef(null)
 
@@ -146,6 +153,7 @@ export default function Capture() {
     if (!gpsLiveActive) { setLivePosition(null); return }
     if (!navigator.geolocation) { setGpsError('GPS is not available in this browser.'); return }
     setGpsError('')
+    lastGpsErrorCodeRef.current = null
     const id = navigator.geolocation.watchPosition(
       (pos) => {
         const { latitude, longitude, accuracy } = pos.coords
@@ -154,7 +162,10 @@ export default function Capture() {
         setLivePosition({ lat: latitude, lon: longitude, accuracy })
         if (samplingRef.current) samplesRef.current.push(reading)
       },
-      (e) => setGpsError(e.message || 'GPS error. Check location permission for this site.'),
+      (e) => {
+        lastGpsErrorCodeRef.current = e.code
+        setGpsError(e.code === 1 ? BLOCKED_LOCATION_MESSAGE : (e.message || 'GPS error. Check location permission for this site.'))
+      },
       { enableHighAccuracy: true, maximumAge: 1000, timeout: 20000 },
     )
     return () => navigator.geolocation.clearWatch(id)
@@ -240,19 +251,21 @@ export default function Capture() {
     samplingRef.current = false
 
     let samples = samplesRef.current
+    let deniedCode = lastGpsErrorCodeRef.current === 1
     if (!samples.length) {
       const one = await getPositionOnce()
-      if (one) { lastReadingRef.current = one; samples = [one] }
+      if (one.errorCode) deniedCode = deniedCode || one.errorCode === 1
+      else { lastReadingRef.current = one; samples = [one] }
     }
     setSampling(false)
 
-    if (!samples.length) return { error: 'No GPS reading. Move to open sky and try again.' }
+    if (!samples.length) return { error: deniedCode ? BLOCKED_LOCATION_MESSAGE : NO_SIGNAL_MESSAGE }
     const lat = mean(samples.map((s) => s.lat))
     const lon = mean(samples.map((s) => s.lon))
     const accuracy = mean(samples.map((s) => s.accuracy))
     // eslint-disable-next-line no-console
     console.log(`[gps-sample] samples=${samples.length} avgAccuracy=${accuracy.toFixed(1)}m`)
-    if (accuracy > BLOCK_ACCURACY_M) return { error: 'GPS too weak. Move to open sky and try again.' }
+    if (accuracy > BLOCK_ACCURACY_M) return { error: WEAK_SIGNAL_MESSAGE }
     return { lat, lon, accuracy, flagged: accuracy > GOOD_ACCURACY_M }
   }
 
