@@ -1,5 +1,7 @@
 # eudr_gee – Deforestation-free cocoa traceability (MVP)
 
+[![CI](https://github.com/shabirazizi1/eudr_gee/actions/workflows/ci.yml/badge.svg)](https://github.com/shabirazizi1/eudr_gee/actions/workflows/ci.yml)
+
 Demo features:
 - **F2 Farm registry & GPS boundary capture** – draw a farm on a satellite map, or **walk the boundary** with GPS (live
   accuracy-checked point capture, charter target < 10 m), live area/perimeter/vertex checks, offline drafts that sync later.
