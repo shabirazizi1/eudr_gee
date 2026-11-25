@@ -191,3 +191,20 @@ the app at a throwaway temp-file SQLite database before anything imports `app.db
 - `CERTIFICATE_VERIFY_FAILED` → run `open "/Applications/Python 3.12/Install Certificates.command"`.
 - `Please authorize access` → `python -c "import ee; ee.Authenticate(force=True)"`.
 - Result page shows a yellow **MOCK** banner → Earth Engine failed; the error text is in the banner.
+
+## AI Usage Declaration
+
+This project was built with AI assistance from two tools: **Claude** (Anthropic's claude.ai chat) for planning, requirements analysis against the client interview and charter, stack and architecture choice, the initial project scaffold, and reviewing outputs (PDFs, screenshots, UI); and **Claude Code** for most implementation, debugging, tests, and documentation. Both run Claude models (Anthropic).
+
+| Area | AI's role | Student's role |
+| --- | --- | --- |
+| Requirements & scope | Claude (chat) analyzed the client interview and charter to surface requirements and open questions | Conducted the client interview with the group, set scope and priorities, and made the final decision on each ambiguity and change request |
+| Architecture & stack | Claude (chat) gave input on the stack and generated the initial project scaffold | Chose the stack (largely the one taught in class) and adapted the scaffold to the course deliverables |
+| Code (backend, frontend) | Claude Code wrote most of the backend and frontend implementation | Directed each feature, reviewed and edited every diff before committing |
+| Tests | Claude proposed test cases; Claude Code wrote the pytest suite | Approved the test scope and ran the suite before every commit |
+| PDFs & UI | Claude Code built the PDF report/label layouts and UI components; Claude (chat) reviewed rendered PDFs and screenshots | Chose the visual style and approved every layout and screenshot before use |
+| Earth Engine setup | Claude Code wrote the integration code in `gee_service.py` | Registered the GEE Cloud project, ran authentication, and verified real vs. mock results |
+| Testing & QA | Claude Code ran automated test suites and build checks after each change | Performed all manual testing — desktop, phone, and offline — before accepting any change |
+| Demo | Claude (chat) suggested a demo outline and recording checklist | Planned, recorded and presented the demo in their own words |
+
+All satellite results are real Google Earth Engine data. Demo farm boundaries are illustrative, placed at real locations in Ghana's Western Region. Every AI-generated change was reviewed and tested by the student before committing.
