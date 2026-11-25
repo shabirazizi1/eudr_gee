@@ -13,7 +13,7 @@ from sqlmodel import Session, select
 
 from . import config, geo, gee_service, scoring
 from .db import get_session, init_db
-from .models import Bag, Batch, BatchContribution, Farm, Review, Verification
+from .models import Bag, Batch, BatchContribution, BoundaryVersion, Farm, Review, Verification
 from .report import build_bag_labels_pdf, build_batch_pdf, build_pdf
 
 
@@ -68,6 +68,16 @@ class ReviewCreate(BaseModel):
     reviewer_name: str = ""
 
 
+class RemapCreate(BaseModel):
+    """Remapping reuses the farm's existing consent -- issue #4 says nothing about consent, so
+    no new consent is asked for here."""
+    geometry: dict  # GeoJSON Polygon
+    capture_method: str = "drawn"  # "gps_walk" or "drawn"
+    gps_accuracy_m: Optional[float] = None
+    flagged_points: int = 0
+    captured_by: str = ""
+
+
 def needs_field_audit(farm: Farm) -> bool:
     """HLR-01: audit required if drawn on a map, or walked with avg accuracy worse than 10 m."""
     if farm.capture_method == "gps_walk":
@@ -90,11 +100,15 @@ def farm_reviews(session: Session, farm_id: int) -> list[Review]:
     ).all()
 
 
-def farm_out(farm: Farm, latest: Optional[Verification] = None, reviews: Optional[list] = None) -> dict:
+def farm_out(farm: Farm, latest: Optional[Verification] = None, reviews: Optional[list] = None,
+             session: Optional[Session] = None) -> dict:
     d = farm.model_dump()
     d.pop("consent_photo_path", None)  # the photo itself is only ever served via /consent_photo
     d["geometry"] = json.loads(farm.geometry)
     d["needs_field_audit"] = needs_field_audit(farm)
+    if session is not None:
+        lbv = latest_boundary_version(session, farm.id)
+        d["boundary_version"] = lbv.version_no if lbv else None
     if latest:
         d["verification"] = {
             "run_id": latest.run_id,
@@ -167,6 +181,60 @@ def latest_verification(session: Session, farm_id: int) -> Optional[Verification
     ).first()
 
 
+def latest_boundary_version(session: Session, farm_id: int) -> Optional[BoundaryVersion]:
+    return session.exec(
+        select(BoundaryVersion).where(BoundaryVersion.farm_id == farm_id)
+        .order_by(BoundaryVersion.version_no.desc())
+    ).first()
+
+
+def boundary_versions_for(session: Session, farm_id: int) -> list[BoundaryVersion]:
+    return session.exec(
+        select(BoundaryVersion).where(BoundaryVersion.farm_id == farm_id)
+        .order_by(BoundaryVersion.version_no)
+    ).all()
+
+
+def verification_for_boundary_version(session: Session, boundary_version_id: int) -> Optional[Verification]:
+    return session.exec(
+        select(Verification).where(Verification.boundary_version_id == boundary_version_id)
+        .order_by(Verification.created_at.desc())
+    ).first()
+
+
+def boundary_version_out(v: BoundaryVersion) -> dict:
+    return {
+        "version_no": v.version_no,
+        "geometry": json.loads(v.geometry),
+        "area_ha": v.area_ha,
+        "perimeter_m": v.perimeter_m,
+        "vertices": v.vertices,
+        "capture_method": v.capture_method,
+        "gps_accuracy_m": v.gps_accuracy_m,
+        "flagged_points": v.flagged_points,
+        "captured_by": v.captured_by,
+        "created_at": v.created_at.isoformat(),
+    }
+
+
+def create_boundary_version(session: Session, farm: Farm) -> BoundaryVersion:
+    """Snapshots the farm's current boundary fields as the next read-only version. Used for
+    both v1 (right after a farm is created) and every remap after that."""
+    prev = latest_boundary_version(session, farm.id)
+    version = BoundaryVersion(
+        farm_id=farm.id, version_no=(prev.version_no + 1) if prev else 1,
+        geometry=farm.geometry, area_ha=farm.area_ha, perimeter_m=farm.perimeter_m,
+        vertices=farm.vertices, capture_method=farm.capture_method,
+        gps_accuracy_m=farm.gps_accuracy_m, flagged_points=farm.flagged_points,
+        captured_by=farm.captured_by,
+    )
+    session.add(version)
+    session.commit()
+    session.refresh(version)
+    session.refresh(farm)  # the commit above expired `farm` too; keep it usable for the caller
+    return version
+
+
 def next_code(session: Session) -> str:
     farms = session.exec(select(Farm.code)).all()
     nums = [int(c.split("-")[1]) for c in farms if c.startswith("GH-")]
@@ -214,7 +282,12 @@ def bag_out(session: Session, bag: Bag) -> dict:
 def batch_out(session: Session, batch: Batch, public: bool = False) -> dict:
     """`public=True` (used only for the buyer-facing shipment PDF) swaps in the minimized farm
     payload and drops review history -- the internal JSON API (list/detail) always uses the
-    full one."""
+    full one.
+
+    Each contribution freezes its farm's boundary/geometry (and the verification run against
+    it) to whatever version the farm was on when it joined the batch (issue #4) -- a later
+    remap must not silently change what an already-built batch shows.
+    """
     contribs = session.exec(
         select(BatchContribution).where(BatchContribution.batch_id == batch.id)
     ).all()
@@ -229,9 +302,29 @@ def batch_out(session: Session, batch: Batch, public: bool = False) -> dict:
         if farm and public:
             farm_payload = farm_out_public(farm, latest_verification(session, farm.id))
         elif farm:
-            farm_payload = farm_out(farm, latest_verification(session, farm.id), farm_reviews(session, farm.id))
+            farm_payload = farm_out(farm, latest_verification(session, farm.id),
+                                     farm_reviews(session, farm.id), session=session)
         else:
             farm_payload = None
+        if farm_payload and c.boundary_version_id:
+            bv = session.get(BoundaryVersion, c.boundary_version_id)
+            if bv:
+                farm_payload.update({
+                    "geometry": json.loads(bv.geometry), "area_ha": bv.area_ha,
+                    "perimeter_m": bv.perimeter_m, "vertices": bv.vertices,
+                    "capture_method": bv.capture_method, "gps_accuracy_m": bv.gps_accuracy_m,
+                    "flagged_points": bv.flagged_points, "boundary_version": bv.version_no,
+                })
+                v_for_version = verification_for_boundary_version(session, bv.id)
+                if v_for_version:
+                    farm_payload["verification"] = {
+                        "run_id": v_for_version.run_id,
+                        "created_at": v_for_version.created_at.isoformat(),
+                        "source": v_for_version.source,
+                        "score": v_for_version.score,
+                        "level": v_for_version.level,
+                        **json.loads(v_for_version.result_json),
+                    }
         items.append({
             "bags": c.bags,
             "kg_per_bag": c.kg_per_bag,
@@ -265,7 +358,7 @@ def health():
 @app.get("/api/farms")
 def list_farms(session: Session = Depends(get_session)):
     farms = session.exec(select(Farm).order_by(Farm.code)).all()
-    return [farm_out(f, reviews=farm_reviews(session, f.id)) for f in farms]
+    return [farm_out(f, reviews=farm_reviews(session, f.id), session=session) for f in farms]
 
 
 @app.post("/api/farms", status_code=201)
@@ -303,7 +396,8 @@ def create_farm(body: FarmCreate, session: Session = Depends(get_session)):
         session.add(farm)
         session.commit()
         session.refresh(farm)
-    out = farm_out(farm, reviews=[])
+    create_boundary_version(session, farm)  # v1 (issue #4)
+    out = farm_out(farm, reviews=[], session=session)
     out["warnings"] = geo.sanity_flags(area)
     return out
 
@@ -313,7 +407,49 @@ def get_farm(farm_id: int, session: Session = Depends(get_session)):
     farm = session.get(Farm, farm_id)
     if not farm:
         raise HTTPException(404, "Farm not found")
-    return farm_out(farm, latest_verification(session, farm_id), farm_reviews(session, farm_id))
+    return farm_out(farm, latest_verification(session, farm_id), farm_reviews(session, farm_id), session=session)
+
+
+@app.post("/api/farms/{farm_id}/remap")
+def remap_farm(farm_id: int, body: RemapCreate, session: Session = Depends(get_session)):
+    """Issue #4: a remap never overwrites the boundary -- it appends a new, read-only version
+    and resets screening (a new geometry means the old risk score no longer applies), which
+    blocks the farm from new batches until it's re-verified. Existing batches keep the version
+    they were built with (see `batch_out`)."""
+    farm = session.get(Farm, farm_id)
+    if not farm:
+        raise HTTPException(404, "Farm not found")
+    errors = geo.validate(body.geometry)
+    if errors:
+        raise HTTPException(422, detail=errors)
+    area = geo.area_ha(body.geometry)
+    farm.geometry = json.dumps(body.geometry)
+    farm.area_ha = round(area, 2)
+    farm.perimeter_m = round(geo.perimeter_m(body.geometry), 1)
+    farm.vertices = geo.vertex_count(body.geometry)
+    farm.capture_method = body.capture_method
+    farm.gps_accuracy_m = body.gps_accuracy_m
+    farm.flagged_points = body.flagged_points
+    farm.captured_by = body.captured_by or farm.captured_by
+    farm.status = "Not screened"
+    farm.risk_score = None
+    farm.risk_level = None
+    farm.last_screened = None
+    session.add(farm)
+    session.commit()
+    session.refresh(farm)
+    create_boundary_version(session, farm)
+    out = farm_out(farm, reviews=farm_reviews(session, farm.id), session=session)
+    out["warnings"] = geo.sanity_flags(area)
+    return out
+
+
+@app.get("/api/farms/{farm_id}/boundary_versions")
+def farm_boundary_versions(farm_id: int, session: Session = Depends(get_session)):
+    farm = session.get(Farm, farm_id)
+    if not farm:
+        raise HTTPException(404, "Farm not found")
+    return [boundary_version_out(v) for v in boundary_versions_for(session, farm_id)]
 
 
 @app.post("/api/farms/{farm_id}/verify")
@@ -330,8 +466,10 @@ def verify_farm(farm_id: int, session: Session = Depends(get_session)):
     result.update({"flags": s["flags"] + geo.sanity_flags(farm.area_ha),
                    "breakdown": s["breakdown"]})
 
+    current_version = latest_boundary_version(session, farm.id)
     v = Verification(
         farm_id=farm.id,
+        boundary_version_id=current_version.id if current_version else None,
         run_id=f"GEE-{farm.code.split('-')[1]}-{uuid.uuid4().hex[:4].upper()}",
         source=result["source"],
         score=s["score"],
@@ -345,7 +483,7 @@ def verify_farm(farm_id: int, session: Session = Depends(get_session)):
     session.commit()
     session.refresh(farm)
     session.refresh(v)
-    return farm_out(farm, v, farm_reviews(session, farm.id))
+    return farm_out(farm, v, farm_reviews(session, farm.id), session=session)
 
 
 @app.post("/api/farms/{farm_id}/review")
@@ -372,7 +510,7 @@ def review_farm(farm_id: int, body: ReviewCreate, session: Session = Depends(get
     session.add(farm)
     session.commit()
     session.refresh(farm)
-    return farm_out(farm, latest_verification(session, farm.id), farm_reviews(session, farm.id))
+    return farm_out(farm, latest_verification(session, farm.id), farm_reviews(session, farm.id), session=session)
 
 
 @app.get("/api/farms/{farm_id}/consent_photo")
@@ -398,7 +536,18 @@ def farm_report(farm_id: int, session: Session = Depends(get_session)):
     if not v:
         raise HTTPException(400, "Run the satellite check before exporting evidence.")
     reviews = [review_out(r) for r in farm_reviews(session, farm_id)]
-    pdf = build_pdf(farm, v, reviews)
+    # Render the boundary (and its matching area/perimeter/vertices) the verification was
+    # actually run against, not the farm's current one -- they can differ after a remap that
+    # hasn't been re-verified yet (issue #4).
+    bv = session.get(BoundaryVersion, v.boundary_version_id) if v.boundary_version_id else None
+    geometry = json.loads(bv.geometry) if bv else None
+    facts_override = {
+        "area_ha": bv.area_ha, "perimeter_m": bv.perimeter_m, "vertices": bv.vertices,
+        "capture_method": bv.capture_method, "gps_accuracy_m": bv.gps_accuracy_m,
+        "flagged_points": bv.flagged_points,
+    } if bv else None
+    pdf = build_pdf(farm, v, reviews, geometry=geometry, boundary_version_no=(bv.version_no if bv else None),
+                    facts_override=facts_override)
     return Response(pdf, media_type="application/pdf", headers={
         "Content-Disposition": f'attachment; filename="evidence_{farm.code}.pdf"'})
 
@@ -457,8 +606,10 @@ def create_batch(body: BatchCreate, session: Session = Depends(get_session)):
     session.refresh(batch)
     for c in body.contributions:
         farm = session.get(Farm, c.farm_id)
+        current_version = latest_boundary_version(session, c.farm_id)
         contribution = BatchContribution(batch_id=batch.id, farm_id=c.farm_id,
-                                          bags=c.bags, kg_per_bag=c.kg_per_bag)
+                                          bags=c.bags, kg_per_bag=c.kg_per_bag,
+                                          boundary_version_id=current_version.id if current_version else None)
         session.add(contribution)
         session.commit()
         session.refresh(contribution)

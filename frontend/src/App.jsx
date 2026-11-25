@@ -138,6 +138,7 @@ export default function App() {
       <Route path="/dashboard" element={<Protected><Dashboard /></Protected>} />
       <Route path="/farms" element={<Protected><Dashboard listOnly /></Protected>} />
       <Route path="/capture" element={<Protected><Capture /></Protected>} />
+      <Route path="/farms/:id/remap" element={<Protected><Capture /></Protected>} />
       <Route path="/farms/:id" element={<Protected><Result /></Protected>} />
       <Route path="/batches" element={<Protected><Batches /></Protected>} />
       <Route path="/batches/:id" element={<Protected><BatchDetail /></Protected>} />
