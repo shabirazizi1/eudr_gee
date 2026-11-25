@@ -13,14 +13,17 @@ class Farm(SQLModel, table=True):
     region: str = "Western Region, Ghana"
     crop: str = "Cocoa"
     harvest_date: Optional[str] = None
-    geometry: str  # GeoJSON Polygon as a JSON string (WGS84)
+    geometry: str  # GeoJSON Polygon, or Point for a declared-area capture (issue #5), as JSON (WGS84)
     area_ha: float = 0.0
     perimeter_m: float = 0.0
     vertices: int = 0
     captured_by: str = ""
-    capture_method: str = "drawn"  # "gps_walk" or "drawn"
-    gps_accuracy_m: Optional[float] = None  # average GPS accuracy across walked points (m)
-    flagged_points: int = 0  # walked points with accuracy worse than 10 m
+    capture_method: str = "drawn"  # "gps_walk", "drawn", or "gps_point" (issue #5)
+    gps_accuracy_m: Optional[float] = None  # average GPS accuracy across walked/captured points (m)
+    flagged_points: int = 0  # walked/captured points with accuracy worse than 10 m
+    # EUDR allows plots <= 4 ha to be declared with a single point instead of a polygon (issue
+    # #5); set only for `capture_method == "gps_point"`, where `area_ha` mirrors this value.
+    declared_area_ha: Optional[float] = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     # Latest screening summary (denormalised for the dashboard)
     risk_score: Optional[int] = None
@@ -43,13 +46,14 @@ class BoundaryVersion(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     farm_id: int = Field(foreign_key="farm.id", index=True)
     version_no: int
-    geometry: str  # GeoJSON Polygon as a JSON string (WGS84)
+    geometry: str  # GeoJSON Polygon, or Point for a declared-area capture (issue #5), as JSON (WGS84)
     area_ha: float = 0.0
     perimeter_m: float = 0.0
     vertices: int = 0
-    capture_method: str = "drawn"  # "gps_walk" or "drawn"
+    capture_method: str = "drawn"  # "gps_walk", "drawn", or "gps_point" (issue #5)
     gps_accuracy_m: Optional[float] = None
     flagged_points: int = 0
+    declared_area_ha: Optional[float] = None  # set only for "gps_point" versions (issue #5)
     captured_by: str = ""
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 

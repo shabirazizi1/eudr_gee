@@ -106,7 +106,9 @@ export default function Dashboard({ listOnly = false }) {
                   {f.status === 'Verified (manual review)' && <div><span className="pill ok small">✓ Manually cleared</span></div>}
                   {f.status === 'Excluded' && <div><span className="pill warn small">⛔ Excluded</span></div>}
                 </td>
-                <td data-label="Area">{f.area_ha} ha</td>
+                <td data-label="Area">
+                  {f.capture_method === 'gps_point' ? `Point (declared ${f.area_ha.toFixed(2)} ha)` : `${f.area_ha} ha`}
+                </td>
                 <td data-label="Risk"><RiskBadge level={f.risk_level} /></td>
                 <td data-label="Score">{f.risk_score ?? '–'}</td>
                 <td data-label="Status">{f.status}</td>

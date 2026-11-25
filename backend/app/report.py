@@ -185,17 +185,26 @@ def _legend_row(small_style, date_label: str, source="esri", widths=(32 * mm, 48
     return legend
 
 
+def _capture_label(f: dict) -> str:
+    """Issue #5: a declared-area Point capture (EUDR <= 4 ha) is labelled "Point (declared X
+    ha)" everywhere a capture method is shown -- the Result page, the dashboard, and both PDFs."""
+    method = f.get("capture_method")
+    if method == "gps_point":
+        return f"Point (declared {f.get('declared_area_ha') or f.get('area_ha') or 0:.2f} ha)"
+    return "GPS walk" if method == "gps_walk" else "Drawn on map"
+
+
 def _facts_table(farm: dict, res: dict, col_widths=(40 * mm, 60 * mm)) -> Table:
     """`farm` is a dict with the Farm model's fields (ORM `.model_dump()` or the API's farm_out()).
     NDVI values stay sourced from Sentinel-2 regardless of which imagery the map above uses."""
-    if farm.get("capture_method") == "gps_walk" and farm.get("gps_accuracy_m") is not None:
+    if farm.get("capture_method") in ("gps_walk", "gps_point") and farm.get("gps_accuracy_m") is not None:
         accuracy_label = f"±{farm['gps_accuracy_m']:.1f} m avg"
         if farm.get("flagged_points"):
             accuracy_label += f" · {farm['flagged_points']} flagged point(s)"
     else:
         accuracy_label = "–"
     facts = [
-        ["Capture method", "GPS walk" if farm.get("capture_method") == "gps_walk" else "Drawn on map"],
+        ["Capture method", _capture_label(farm)],
         ["GPS accuracy", accuracy_label],
         ["Area", f"{farm['area_ha']:.2f} ha"],
         ["Perimeter", f"{farm['perimeter_m']:.0f} m"],
@@ -474,6 +483,8 @@ def build_batch_pdf(batch, data: dict) -> bytes:
         ["Cutoff date", f"31 Dec {config.CUTOFF_YEAR}"],
         ["Buyer", batch.buyer],
         ["Exporter", EXPORTER],
+        ["EUDR geolocation data", "Full due-diligence dataset available as GeoJSON -- see "
+                                  "'Export EUDR geolocation' on the batch's traceability page."],
     ]
     dt = Table(details, colWidths=[42 * mm, 86 * mm])
     dt.setStyle(TableStyle([("FONTSIZE", (0, 0), (-1, -1), 9),
@@ -500,7 +511,7 @@ def build_batch_pdf(batch, data: dict) -> bytes:
         if not f:
             continue
         v = f.get("verification")
-        capture = "GPS walk" if f.get("capture_method") == "gps_walk" else "Drawn on map"
+        capture = _capture_label(f)
         risk = f"{v['score']} ({v['level']})" if v else "Not screened"
         run = f"{v['run_id']} · {v['created_at'][:10]}" if v else "–"
         if f.get("boundary_version"):

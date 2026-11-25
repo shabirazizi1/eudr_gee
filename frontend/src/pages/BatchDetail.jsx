@@ -40,6 +40,7 @@ export default function BatchDetail() {
         </div>
         <div className="row gap page-actions">
           <a className="btn" href={api.bagLabelsUrl(batch.id)}>🏷 Print bag labels</a>
+          <a className="btn" href={api.geolocationUrl(batch.id)}>⬠ Export EUDR geolocation (GeoJSON)</a>
           <a className="btn primary" href={api.batchReportUrl(batch.id)}>⤓ Export shipment compliance package</a>
         </div>
       </div>
@@ -84,7 +85,13 @@ export default function BatchDetail() {
                   ) : <span className="muted">Farm removed</span>}
                 </td>
                 <td data-label="Risk">{c.farm ? <RiskBadge level={c.farm.risk_level} /> : '–'}</td>
-                <td data-label="Area">{c.farm ? `${c.farm.area_ha} ha` : '–'}</td>
+                <td data-label="Area">
+                  {c.farm
+                    ? c.farm.capture_method === 'gps_point'
+                      ? `Point (declared ${c.farm.area_ha.toFixed(2)} ha)`
+                      : `${c.farm.area_ha} ha`
+                    : '–'}
+                </td>
                 <td data-label="Bags">{c.bags}</td>
                 <td data-label="Weight">{c.kg.toFixed(0)} kg</td>
               </tr>

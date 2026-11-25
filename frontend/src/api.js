@@ -35,6 +35,7 @@ export const api = {
   batch: (id) => request(`/batches/${id}`),
   createBatch: (body) => request('/batches', { method: 'POST', body: JSON.stringify(body) }),
   batchReportUrl: (id) => `/api/batches/${id}/report.pdf`,
+  geolocationUrl: (id) => `/api/batches/${id}/geolocation.geojson`,
   bagLabelsUrl: (id) => `/api/batches/${id}/bag_labels.pdf`,
   bag: (bagId) => request(`/bags/${bagId}`),
 }
