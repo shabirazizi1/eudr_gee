@@ -66,7 +66,8 @@ def main():
                      geometry=json.dumps(g), area_ha=round(geo.area_ha(g), 2),
                      perimeter_m=round(geo.perimeter_m(g), 1), vertices=v,
                      harvest_date="2026-10-15", captured_by="Demo seed", capture_method=method,
-                     gps_accuracy_m=accuracy, flagged_points=flagged)
+                     gps_accuracy_m=accuracy, flagged_points=flagged,
+                     consent_method="attestation", consent_given=True, consent_date="2026-10-01")
             s.add(f)
             created.append(f)
         s.commit()

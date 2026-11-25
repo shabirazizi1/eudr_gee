@@ -10,6 +10,16 @@ import FarmMap from '../components/FarmMap.jsx'
 // F2 – Farm registry & GPS boundary capture (HLR-01: "Walk the boundary" GPS mode)
 const DRAFT_KEY = 'eudr_capture_draft'
 const EMPTY = { name: '', farmer_name: '', village: '', harvest_date: '' }
+const today = () => new Date().toISOString().slice(0, 10)
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(reader.result)
+    reader.onerror = reject
+    reader.readAsDataURL(file)
+  })
+}
 const SAMPLE_MS = 3000       // how long "Add point here" averages GPS readings for
 const GOOD_ACCURACY_M = 10   // charter target
 const BLOCK_ACCURACY_M = 30  // worse than this, the point is rejected outright
@@ -53,6 +63,14 @@ export default function Capture() {
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
 
+  // Farmer consent (issue #7): attestation (checkbox + agent + date) is required; a signed-form
+  // photo is optional on top. Farms cannot be saved -- online, offline, or via the sticky bar --
+  // without it.
+  const [consentGiven, setConsentGiven] = useState(draft?.consentGiven || false)
+  const [consentDate, setConsentDate] = useState(draft?.consentDate || today())
+  const [consentPhoto, setConsentPhoto] = useState(draft?.consentPhoto || null)
+  const consentRef = useRef(null)
+
   // Walk-the-boundary state
   const [mode, setModeState] = useState(draft?.mode || 'draw')             // 'draw' | 'walk'
   const [walkPoints, setWalkPoints] = useState(draft?.walkPoints || [])    // [{lat, lon, accuracy, flagged}]
@@ -77,11 +95,12 @@ export default function Capture() {
     const t = new Date().toISOString()
     try {
       localStorage.setItem(DRAFT_KEY, JSON.stringify({
-        form, geometry, mode, walkPoints, walkFinished, captureMethod, savedAt: t,
+        form, geometry, mode, walkPoints, walkFinished, captureMethod,
+        consentGiven, consentDate, consentPhoto, savedAt: t,
       }))
     } catch { /* ignore */ }
     setSavedAt(t)
-  }, [form, geometry, mode, walkPoints, walkFinished, captureMethod])
+  }, [form, geometry, mode, walkPoints, walkFinished, captureMethod, consentGiven, consentDate, consentPhoto])
 
   // Keep `geometry` in sync with the walked points while actively walking
   useEffect(() => {
@@ -128,6 +147,13 @@ export default function Capture() {
 
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value })
   const canSubmit = form.name && form.farmer_name && stats?.valid && stats.vertices >= 3
+    && consentGiven && consentDate
+
+  const onConsentPhoto = async (e) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setConsentPhoto(await fileToBase64(file))
+  }
 
   const resetBoundary = () => {
     setGeometry(null)
@@ -150,6 +176,9 @@ export default function Capture() {
     setForm(EMPTY)
     setModeState('draw')
     resetBoundary()
+    setConsentGiven(false)
+    setConsentDate(today())
+    setConsentPhoto(null)
   }
 
   const addPoint = async () => {
@@ -212,6 +241,7 @@ export default function Capture() {
     if (!stats?.valid || stats.vertices < 3 || busy) return
     if (!form.name.trim()) { nameRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }); nameRef.current?.focus(); return }
     if (!form.farmer_name.trim()) { farmerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }); farmerRef.current?.focus(); return }
+    if (!consentGiven || !consentDate) { consentRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }); return }
     submit(true)
   }
 
@@ -225,6 +255,9 @@ export default function Capture() {
       capture_method: captureMethod,
       gps_accuracy_m: avgAccuracy !== null ? Math.round(avgAccuracy * 10) / 10 : null,
       flagged_points: flaggedCount,
+      consent_given: consentGiven,
+      consent_date: consentDate,
+      consent_photo_base64: consentPhoto || null,
     }
     if (!navigator.onLine) {
       queueFarm(body)
@@ -332,6 +365,22 @@ export default function Capture() {
             <input value={form.village} onChange={set('village')} placeholder="Asankrangwa" />
             <label className="field-label">Last harvest date</label>
             <input type="date" value={form.harvest_date} onChange={set('harvest_date')} />
+          </section>
+
+          <section className="card pad" ref={consentRef}>
+            <b>Farmer consent *</b>
+            <label className="row gap" style={{ marginTop: 8, alignItems: 'flex-start' }}>
+              <input type="checkbox" checked={consentGiven} onChange={(e) => setConsentGiven(e.target.checked)} />
+              <span className="small">
+                The farmer has given consent to collect and share their personal and location
+                data for this registration. Recorded by {getUser()?.name || 'this agent'}.
+              </span>
+            </label>
+            <label className="field-label">Consent date *</label>
+            <input type="date" value={consentDate} onChange={(e) => setConsentDate(e.target.value)} />
+            <label className="field-label">Signed consent form photo (optional)</label>
+            <input type="file" accept="image/*" capture="environment" onChange={onConsentPhoto} />
+            {consentPhoto && <p className="small ok-text">✓ Photo attached</p>}
           </section>
 
           <section className="card pad">

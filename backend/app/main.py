@@ -1,3 +1,4 @@
+import base64
 import json
 import uuid
 from contextlib import asynccontextmanager
@@ -6,7 +7,7 @@ from typing import Optional
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
@@ -19,6 +20,7 @@ from .report import build_bag_labels_pdf, build_batch_pdf, build_pdf
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    config.CONSENT_PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
     yield
 
 
@@ -42,6 +44,9 @@ class FarmCreate(BaseModel):
     capture_method: str = "drawn"  # "gps_walk" or "drawn"
     gps_accuracy_m: Optional[float] = None
     flagged_points: int = 0
+    consent_given: bool = False
+    consent_date: Optional[str] = None
+    consent_photo_base64: Optional[str] = None  # optional signed-form photo (data URL or raw base64)
 
 
 class BatchContributionIn(BaseModel):
@@ -87,6 +92,7 @@ def farm_reviews(session: Session, farm_id: int) -> list[Review]:
 
 def farm_out(farm: Farm, latest: Optional[Verification] = None, reviews: Optional[list] = None) -> dict:
     d = farm.model_dump()
+    d.pop("consent_photo_path", None)  # the photo itself is only ever served via /consent_photo
     d["geometry"] = json.loads(farm.geometry)
     d["needs_field_audit"] = needs_field_audit(farm)
     if latest:
@@ -102,6 +108,56 @@ def farm_out(farm: Farm, latest: Optional[Verification] = None, reviews: Optiona
         d["reviews"] = [review_out(r) for r in reviews]
         d["latest_review"] = d["reviews"][0] if d["reviews"] else None
     return d
+
+
+def farm_out_public(farm: Farm, latest: Optional[Verification] = None) -> dict:
+    """Minimized farm payload for the public bag page and buyer-facing shipment PDF (data
+    minimization, issue #7): no farmer full name (-> initials), no village, no capturing
+    agent's name, no consent record, no review/reviewer history. Satellite screening data,
+    geometry and area/perimeter stay -- none of that is personal data, and EUDR requires the
+    boundary coordinates.
+    """
+    initials = "".join(w[0] for w in farm.farmer_name.split() if w).upper() or "–"
+    d = {
+        "id": farm.id,
+        "code": farm.code,
+        "name": farm.name,
+        "farmer_name": initials,  # same key as farm_out() so report.py needs no special-casing
+        "region": farm.region,
+        "crop": farm.crop,
+        "harvest_date": farm.harvest_date,
+        "geometry": json.loads(farm.geometry),
+        "area_ha": farm.area_ha,
+        "perimeter_m": farm.perimeter_m,
+        "vertices": farm.vertices,
+        "capture_method": farm.capture_method,
+        "gps_accuracy_m": farm.gps_accuracy_m,
+        "flagged_points": farm.flagged_points,
+        "risk_score": farm.risk_score,
+        "risk_level": farm.risk_level,
+        "status": farm.status,
+        "last_screened": farm.last_screened.isoformat() if farm.last_screened else None,
+    }
+    if latest:
+        d["verification"] = {
+            "run_id": latest.run_id,
+            "created_at": latest.created_at.isoformat(),
+            "source": latest.source,
+            "score": latest.score,
+            "level": latest.level,
+            **json.loads(latest.result_json),
+        }
+    return d
+
+
+def _save_consent_photo(farm: Farm, data: str) -> None:
+    """Decodes a base64 (optionally data-URL-prefixed) image and saves it to
+    uploads/consent/<farm code>.jpg -- gitignored, never returned by farm_out()."""
+    raw = data.split(",", 1)[-1] if "," in data else data
+    config.CONSENT_PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
+    path = config.CONSENT_PHOTOS_DIR / f"{farm.code}.jpg"
+    path.write_bytes(base64.b64decode(raw))
+    farm.consent_photo_path = path.name
 
 
 def latest_verification(session: Session, farm_id: int) -> Optional[Verification]:
@@ -142,18 +198,23 @@ def create_bags(session: Session, batch: Batch, contribution: BatchContribution,
 
 
 def bag_out(session: Session, bag: Bag) -> dict:
+    """Public, no-login endpoint -- always uses the minimized farm payload (data minimization,
+    issue #7)."""
     farm = session.get(Farm, bag.farm_id)
     batch = session.get(Batch, bag.batch_id)
     return {
         "bag_id": bag.bag_id,
         "weight_kg": bag.weight_kg,
         "created_at": bag.created_at.isoformat(),
-        "farm": farm_out(farm, latest_verification(session, farm.id)) if farm else None,
+        "farm": farm_out_public(farm, latest_verification(session, farm.id)) if farm else None,
         "batch": {"id": batch.id, "code": batch.code, "buyer": batch.buyer} if batch else None,
     }
 
 
-def batch_out(session: Session, batch: Batch) -> dict:
+def batch_out(session: Session, batch: Batch, public: bool = False) -> dict:
+    """`public=True` (used only for the buyer-facing shipment PDF) swaps in the minimized farm
+    payload and drops review history -- the internal JSON API (list/detail) always uses the
+    full one."""
     contribs = session.exec(
         select(BatchContribution).where(BatchContribution.batch_id == batch.id)
     ).all()
@@ -165,12 +226,17 @@ def batch_out(session: Session, batch: Batch) -> dict:
         total_bags += c.bags
         total_kg += kg
         total_area += farm.area_ha if farm else 0.0
+        if farm and public:
+            farm_payload = farm_out_public(farm, latest_verification(session, farm.id))
+        elif farm:
+            farm_payload = farm_out(farm, latest_verification(session, farm.id), farm_reviews(session, farm.id))
+        else:
+            farm_payload = None
         items.append({
             "bags": c.bags,
             "kg_per_bag": c.kg_per_bag,
             "kg": kg,
-            "farm": farm_out(farm, latest_verification(session, farm.id),
-                             farm_reviews(session, farm.id)) if farm else None,
+            "farm": farm_payload,
         })
     return {
         "id": batch.id,
@@ -204,6 +270,8 @@ def list_farms(session: Session = Depends(get_session)):
 
 @app.post("/api/farms", status_code=201)
 def create_farm(body: FarmCreate, session: Session = Depends(get_session)):
+    if not body.consent_given or not (body.consent_date or "").strip():
+        raise HTTPException(422, detail=["Farmer consent (checkbox + date) is required before a farm can be submitted."])
     errors = geo.validate(body.geometry)
     if errors:
         raise HTTPException(422, detail=errors)
@@ -223,10 +291,18 @@ def create_farm(body: FarmCreate, session: Session = Depends(get_session)):
         capture_method=body.capture_method,
         gps_accuracy_m=body.gps_accuracy_m,
         flagged_points=body.flagged_points,
+        consent_method="photo" if body.consent_photo_base64 else "attestation",
+        consent_given=True,
+        consent_date=body.consent_date.strip(),
     )
     session.add(farm)
     session.commit()
     session.refresh(farm)
+    if body.consent_photo_base64:
+        _save_consent_photo(farm, body.consent_photo_base64)
+        session.add(farm)
+        session.commit()
+        session.refresh(farm)
     out = farm_out(farm, reviews=[])
     out["warnings"] = geo.sanity_flags(area)
     return out
@@ -297,6 +373,20 @@ def review_farm(farm_id: int, body: ReviewCreate, session: Session = Depends(get
     session.commit()
     session.refresh(farm)
     return farm_out(farm, latest_verification(session, farm.id), farm_reviews(session, farm.id))
+
+
+@app.get("/api/farms/{farm_id}/consent_photo")
+def consent_photo(farm_id: int, session: Session = Depends(get_session)):
+    """Admin-only by convention (same no-real-auth model as /review): the consent photo itself
+    is never embedded in list, public or PDF responses -- only reachable here, one farm at a time.
+    """
+    farm = session.get(Farm, farm_id)
+    if not farm or not farm.consent_photo_path:
+        raise HTTPException(404, "No consent photo on file")
+    path = config.CONSENT_PHOTOS_DIR / farm.consent_photo_path
+    if not path.exists():
+        raise HTTPException(404, "No consent photo on file")
+    return FileResponse(path, media_type="image/jpeg")
 
 
 @app.get("/api/farms/{farm_id}/report.pdf")
@@ -387,10 +477,12 @@ def get_batch(batch_id: int, session: Session = Depends(get_session)):
 
 @app.get("/api/batches/{batch_id}/report.pdf")
 def batch_report(batch_id: int, session: Session = Depends(get_session)):
+    """Buyer-facing shipment compliance package -- uses the minimized farm payload (data
+    minimization, issue #7)."""
     batch = session.get(Batch, batch_id)
     if not batch:
         raise HTTPException(404, "Batch not found")
-    data = batch_out(session, batch)
+    data = batch_out(session, batch, public=True)
     pdf = build_batch_pdf(batch, data)
     return Response(pdf, media_type="application/pdf", headers={
         "Content-Disposition": f'attachment; filename="shipment_{batch.code}.pdf"'})

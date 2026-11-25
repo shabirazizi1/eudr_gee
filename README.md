@@ -175,6 +175,29 @@ the PDFs say so on every page."*
 Low < 30 ≤ Medium < 60 ≤ High. Any loss ≥ 0.1 ha is at least Medium. Anything not Low, or with
 missing data, goes to **Under review**.
 
+## Personal data & consent
+
+A farm can't be submitted without the farmer's consent, recorded by the field agent before
+capture: a checkbox + agent attestation + date (the default), or a photo of a signed consent
+form on top of that.
+
+**What's stored:** farmer name, village, GPS boundary, the agent's name, and the consent record
+(method, date, and an optional photo). Consent photos are saved as files under
+`backend/uploads/consent/` (gitignored, never committed) and are only ever returned by the
+admin-only `GET /api/farms/{id}/consent_photo` endpoint — never in the farm list, the public
+bag page, or any PDF.
+
+**Why:** the cooperative's government requires farmer consent before collecting and sharing
+personal and location data, and data minimization limits what's exposed downstream to only
+what's needed.
+
+**Who can see what:**
+- **Internal admin pages** (dashboard, farm/batch detail) show full farmer names, villages, and
+  consent status — needed to run and audit the program.
+- **The public bag page** (`/bag/<id>`, no login) and the **buyer-facing shipment compliance
+  PDF** show only the farm code, name, region, status, and the farmer's **initials** — never the
+  full name, village, or consent record. Boundary coordinates stay, since the EUDR requires them.
+
 ## Running tests
 
 ```bash

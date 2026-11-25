@@ -41,7 +41,7 @@ export default function BagPage() {
         <div className="bag-row"><span>Bag ID</span><b>{bag.bag_id}</b></div>
         <div className="bag-row"><span>Weight</span><b>{bag.weight_kg.toFixed(0)} kg</b></div>
         <div className="bag-row"><span>Farm</span><b>{farm?.name || '–'}</b></div>
-        <div className="bag-row"><span>Region</span><b>{farm?.village || farm?.region || '–'}</b></div>
+        <div className="bag-row"><span>Region</span><b>{farm?.region || '–'}</b></div>
         <div className="bag-row">
           <span>Verification date</span>
           <b>{verifiedAt ? new Date(verifiedAt).toLocaleDateString() : 'Not yet screened'}</b>
