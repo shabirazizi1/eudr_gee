@@ -99,6 +99,32 @@ npm run dev:phone   # vite --host --mode phone (adds @vitejs/plugin-basic-ssl)
    "Show Details → visit this website"; Chrome: "Advanced → Proceed to … (unsafe)").
 3. Go to **Capture → Walk the boundary**, allow the location permission prompt, and walk the plot.
 
+## 4c. Run with Docker Compose
+
+An alternative to §1/§4 — runs the whole app (backend + frontend) in containers.
+
+```bash
+cp backend/.env.example backend/.env   # first time only, if you don't already have one
+docker compose up --build
+```
+
+Open **http://localhost:8080**. The SQLite DB and `uploads/` live in a named Docker volume
+(`db_data`) so data survives `docker compose down` / restarts, and demo farms are seeded
+automatically the first time the database is empty.
+
+First start seeds demo data with Earth Engine (~2 min). The app is reachable right away — the
+farm list is just empty until that background seed run finishes.
+
+- **With Earth Engine credentials**: if you've already run `earthengine authenticate` on this Mac
+  (§2), `~/.config/earthengine` is mounted read-only into the backend container and satellite
+  checks use real Earth Engine (`source: "gee"` in the verify result).
+- **Without Earth Engine credentials**: if that folder doesn't exist, or the mounted credentials
+  are invalid/expired, Earth Engine calls fail and the backend falls back to a clearly-labelled
+  **MOCK** result (`ALLOW_MOCK_FALLBACK=true` in `backend/.env`) — the UI always shows which source
+  produced a result, real results are never presented as mock or vice versa.
+
+Stop with `docker compose down` (add `-v` to also delete the DB volume and start fresh).
+
 ## 5. Demo script (≈6 min)
 
 Run `python -m app.seed --reset --verify` right before recording so the state matches §3 exactly.
