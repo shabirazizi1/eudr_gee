@@ -6,6 +6,7 @@ import pymupdf
 from PIL import Image
 from sqlmodel import Session, select
 
+from app import config
 from app.db import engine
 from app.models import Bag
 from tests.conftest import make_polygon
@@ -241,6 +242,118 @@ def test_review_confirm_blocks_batch_join(client, mock_screen):
     })
     assert r.status_code == 200
     assert r.json()["status"] == "Excluded"
+
+
+# ---------------------------------------------------------------- mass balance (issue #6)
+
+def test_capacity_maths_for_polygon_and_point_farms(client, mock_screen):
+    polygon_farm = create_verified_farm(client, mock_screen)
+    point_farm = create_verified_farm(client, mock_screen, farm_payload=POINT_FARM)
+
+    farms = {f["id"]: f for f in client.get("/api/farms", params={"season": "2026/27"}).json()}
+    poly_expected = round(polygon_farm["area_ha"] * config.YIELD_KG_PER_HA, 1)
+    point_expected = round(POINT_FARM["declared_area_ha"] * config.YIELD_KG_PER_HA, 1)
+
+    assert farms[polygon_farm["id"]]["capacity_kg"] == poly_expected
+    assert farms[polygon_farm["id"]]["remaining_capacity_kg"] == poly_expected  # nothing committed yet
+    assert farms[point_farm["id"]]["capacity_kg"] == point_expected
+    assert farms[point_farm["id"]]["remaining_capacity_kg"] == point_expected
+
+
+def test_batch_exceeding_capacity_is_blocked_without_override(client, mock_screen):
+    verified = create_verified_farm(client, mock_screen)
+    r = client.post("/api/batches", json={
+        "contributions": [{"farm_id": verified["id"], "bags": 1000}],  # 64,000 kg -- always over capacity
+    })
+    assert r.status_code == 422
+    assert any("override" in d.lower() for d in r.json()["detail"])
+
+
+def test_admin_override_accepted_and_recorded(client, mock_screen):
+    verified = create_verified_farm(client, mock_screen)
+    r = client.post("/api/batches", json={
+        "contributions": [{
+            "farm_id": verified["id"], "bags": 1000,
+            "override_reason": "Second harvest", "override_note": "Confirmed via field visit.",
+            "overridden_by": "Nadia Owusu", "overridden_by_role": "admin",
+        }],
+    })
+    assert r.status_code == 201
+    override = r.json()["contributions"][0]["override"]
+    assert override["reason"] == "Second harvest"
+    assert override["by"] == "Nadia Owusu"
+    assert override["note"] == "Confirmed via field visit."
+    assert override["at"]
+
+
+def test_non_admin_override_is_rejected(client, mock_screen):
+    verified = create_verified_farm(client, mock_screen)
+    r = client.post("/api/batches", json={
+        "contributions": [{
+            "farm_id": verified["id"], "bags": 1000,
+            "override_reason": "Second harvest", "override_note": "Confirmed via field visit.",
+            "overridden_by": "Kofi Mensah", "overridden_by_role": "warehouse",
+        }],
+    })
+    assert r.status_code == 422
+    assert any("admin" in d.lower() for d in r.json()["detail"])
+
+
+def test_capacity_is_per_season(client, mock_screen):
+    verified = create_verified_farm(client, mock_screen)
+    capacity = verified["area_ha"] * config.YIELD_KG_PER_HA
+    bags_70pct = int((capacity * 0.7) / 64)
+
+    first = client.post("/api/batches", json={
+        "contributions": [{"farm_id": verified["id"], "bags": bags_70pct}],
+        "season": "2026/27",
+    })
+    assert first.status_code == 201
+
+    # same season, same farm, another 70% -> exceeds the remaining 30% -> blocked
+    blocked = client.post("/api/batches", json={
+        "contributions": [{"farm_id": verified["id"], "bags": bags_70pct}],
+        "season": "2026/27",
+    })
+    assert blocked.status_code == 422
+
+    # a new season resets remaining capacity -> the same request now succeeds
+    new_season = client.post("/api/batches", json={
+        "contributions": [{"farm_id": verified["id"], "bags": bags_70pct}],
+        "season": "2027/28",
+    })
+    assert new_season.status_code == 201
+
+
+def test_remapped_area_applies_to_new_batches_only(client, mock_screen):
+    verified = create_verified_farm(client, mock_screen)
+    capacity1 = verified["area_ha"] * config.YIELD_KG_PER_HA
+    bags_half = int((capacity1 * 0.5) / 64)
+
+    batch1 = client.post("/api/batches", json={
+        "contributions": [{"farm_id": verified["id"], "bags": bags_half}],
+        "season": "2026/27",
+    })
+    assert batch1.status_code == 201
+    batch1_id = batch1.json()["id"]
+
+    # remap to a much smaller plot, then re-verify to make it batchable again
+    small_square = make_polygon(cx=-2.45, cy=5.82, half=0.0002)
+    remapped = client.post(f"/api/farms/{verified['id']}/remap", json={"geometry": small_square}).json()
+    assert remapped["area_ha"] < verified["area_ha"]
+    mock_screen()
+    client.post(f"/api/farms/{verified['id']}/verify")
+
+    # the new (smaller) capacity applies to a NEW batch in the same season -- already over
+    # capacity from batch1 alone, so even one more bag is blocked
+    blocked = client.post("/api/batches", json={
+        "contributions": [{"farm_id": verified["id"], "bags": 1}],
+        "season": "2026/27",
+    })
+    assert blocked.status_code == 422
+
+    # the existing batch1 is untouched by the remap
+    assert client.get(f"/api/batches/{batch1_id}").status_code == 200
 
     batch = client.post("/api/batches", json={
         "contributions": [{"farm_id": verified["id"], "bags": 5}],

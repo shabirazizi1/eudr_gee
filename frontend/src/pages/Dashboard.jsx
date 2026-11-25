@@ -68,6 +68,7 @@ export default function Dashboard({ listOnly = false }) {
                 {summary.under_review} under review · {summary.not_screened} not screened · {summary.needs_field_audit} needs field audit
                 · {summary.reviewed} reviewed · {summary.excluded} excluded
               </small></div>
+            <div className="card pad"><small className="muted">Mass-balance overrides</small><b>{summary.mass_balance_overrides}</b></div>
           </div>
           <div className="card pad">
             <div className="card-head tight"><b>Satellite risk distribution</b><small className="muted">{summary.screened} screened farms</small></div>

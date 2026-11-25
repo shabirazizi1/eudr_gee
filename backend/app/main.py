@@ -29,6 +29,7 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 
 REVIEW_REASONS = ["Cloud cover", "Natural clearing", "Replanting of existing cocoa", "Boundary error", "Other"]
 BATCHABLE_STATUSES = ("Verified", "Verified (manual review)")
+OVERRIDE_REASONS = ["Second harvest", "Yield above average", "Data correction", "Other"]
 
 
 # ---------------------------------------------------------------- schemas
@@ -54,11 +55,19 @@ class BatchContributionIn(BaseModel):
     farm_id: int
     bags: int
     kg_per_bag: float = 64.0
+    # Mass-balance override (issue #6): required only if this contribution exceeds the farm's
+    # remaining season capacity. `overridden_by_role` mirrors the no-real-auth pattern used by
+    # /review -- the UI restricts the override action to admins, the backend validates the role.
+    override_reason: Optional[str] = None
+    override_note: str = ""
+    overridden_by: str = ""
+    overridden_by_role: Optional[str] = None
 
 
 class BatchCreate(BaseModel):
     buyer: str = "Chocolaterie Vandermeer, Ghent, Belgium"
     created_by: str = ""
+    season: str = config.DEFAULT_SEASON
     contributions: list[BatchContributionIn]
 
 
@@ -126,6 +135,32 @@ def display_geometry(geometry_str: str, declared_area_ha: Optional[float]) -> di
 
 def is_batchable(farm: Farm) -> bool:
     return farm.status in BATCHABLE_STATUSES
+
+
+def farm_capacity_kg(session: Session, farm: Farm) -> float:
+    """Issue #6: estimated max yield per farm per season = area x YIELD_KG_PER_HA, using the
+    farm's CURRENT boundary version's area (or declared_area_ha for a point farm). A remap
+    changes this for new batches only -- a batch already created keeps its own locked-in bag
+    and weight records, which don't depend on area at all."""
+    bv = latest_boundary_version(session, farm.id)
+    area = (bv.declared_area_ha or bv.area_ha) if bv else (farm.declared_area_ha or farm.area_ha)
+    return round(area * config.YIELD_KG_PER_HA, 1)
+
+
+def season_committed_kg(session: Session, farm_id: int, season: str) -> float:
+    """Total kg already committed for this farm across every batch in this season."""
+    batch_ids = session.exec(select(Batch.id).where(Batch.season == season)).all()
+    if not batch_ids:
+        return 0.0
+    contribs = session.exec(
+        select(BatchContribution).where(BatchContribution.farm_id == farm_id,
+                                         BatchContribution.batch_id.in_(batch_ids))
+    ).all()
+    return sum(c.bags * c.kg_per_bag for c in contribs)
+
+
+def farm_remaining_capacity_kg(session: Session, farm: Farm, season: str) -> float:
+    return round(farm_capacity_kg(session, farm) - season_committed_kg(session, farm.id, season), 1)
 
 
 def review_out(r: Review) -> dict:
@@ -372,11 +407,18 @@ def batch_out(session: Session, batch: Batch, public: bool = False) -> dict:
             "kg_per_bag": c.kg_per_bag,
             "kg": kg,
             "farm": farm_payload,
+            "override": {
+                "reason": c.override_reason,
+                "note": c.override_note,
+                "by": c.overridden_by,
+                "at": c.overridden_at.isoformat() if c.overridden_at else None,
+            } if c.override_reason else None,
         })
     return {
         "id": batch.id,
         "code": batch.code,
         "buyer": batch.buyer,
+        "season": batch.season,
         "created_at": batch.created_at.isoformat(),
         "created_by": batch.created_by,
         "contributions": items,
@@ -398,9 +440,16 @@ def health():
 
 
 @app.get("/api/farms")
-def list_farms(session: Session = Depends(get_session)):
+def list_farms(season: Optional[str] = None, session: Session = Depends(get_session)):
+    """`season` (issue #6) adds each farm's mass-balance capacity/remaining capacity for that
+    season -- used by the batch-creation picker. Omitted, the response is unchanged."""
     farms = session.exec(select(Farm).order_by(Farm.code)).all()
-    return [farm_out(f, reviews=farm_reviews(session, f.id), session=session) for f in farms]
+    out = [farm_out(f, reviews=farm_reviews(session, f.id), session=session) for f in farms]
+    if season:
+        for farm, payload in zip(farms, out):
+            payload["capacity_kg"] = farm_capacity_kg(session, farm)
+            payload["remaining_capacity_kg"] = farm_remaining_capacity_kg(session, farm, season)
+    return out
 
 
 @app.post("/api/farms", status_code=201)
@@ -603,6 +652,9 @@ def summary(session: Session = Depends(get_session)):
     farms = session.exec(select(Farm)).all()
     screened = [f for f in farms if f.risk_level]
     dist = {lvl: sum(1 for f in screened if f.risk_level == lvl) for lvl in ("Low", "Medium", "High")}
+    mass_balance_overrides = session.exec(
+        select(BatchContribution).where(BatchContribution.override_reason.is_not(None))
+    ).all()
     return {
         "farms": len(farms),
         "hectares": round(sum(f.area_ha for f in farms), 1),
@@ -614,6 +666,7 @@ def summary(session: Session = Depends(get_session)):
         "needs_field_audit": sum(1 for f in farms if needs_field_audit(f)),
         "reviewed": sum(1 for f in farms if f.status == "Verified (manual review)"),
         "excluded": sum(1 for f in farms if f.status == "Excluded"),
+        "mass_balance_overrides": len(mass_balance_overrides),
     }
 
 
@@ -627,35 +680,66 @@ def list_batches(session: Session = Depends(get_session)):
 
 @app.post("/api/batches", status_code=201)
 def create_batch(body: BatchCreate, session: Session = Depends(get_session)):
+    """Issue #6: a contribution exceeding its farm's remaining season capacity is blocked unless
+    a Brand admin supplies an override reason, note and name. `season` is tracked per batch so a
+    new season resets every farm's remaining capacity."""
     if not body.contributions:
         raise HTTPException(422, detail=["A batch needs at least one farm contribution."])
+    season = body.season.strip() or config.DEFAULT_SEASON
     errors = []
+    overrides_needed = {}  # farm_id -> True, only for contributions that actually need one
     for c in body.contributions:
         farm = session.get(Farm, c.farm_id)
         if not farm:
             errors.append(f"Farm {c.farm_id} not found.")
-        elif farm.status == "Excluded":
+            continue
+        if farm.status == "Excluded":
             reviews = farm_reviews(session, farm.id)
             reason = reviews[0].reason if reviews else "manual review"
             errors.append(f"{farm.name} is Excluded ({reason}) and cannot be added to a batch.")
-        elif not is_batchable(farm):
+            continue
+        if not is_batchable(farm):
             errors.append(f"{farm.name} is not Verified and cannot be added to a batch.")
-        elif c.bags <= 0:
+            continue
+        if c.bags <= 0:
             errors.append(f"{farm.name}: bag count must be positive.")
+            continue
+        kg = c.bags * c.kg_per_bag
+        remaining = farm_remaining_capacity_kg(session, farm, season)
+        if kg <= remaining:
+            continue
+        overrides_needed[farm.id] = True
+        if not c.override_reason:
+            errors.append(f"{farm.name}: {kg:.0f} kg exceeds the remaining {season} capacity "
+                          f"({max(remaining, 0):.0f} kg) -- a mass-balance override is required.")
+        elif c.override_reason not in OVERRIDE_REASONS:
+            errors.append(f"{farm.name}: override reason must be one of: {', '.join(OVERRIDE_REASONS)}")
+        elif not c.override_note.strip():
+            errors.append(f"{farm.name}: a mass-balance override note is required.")
+        elif not c.overridden_by.strip():
+            errors.append(f"{farm.name}: the overriding admin's name is required.")
+        elif c.overridden_by_role != "admin":
+            errors.append(f"{farm.name}: only a Brand admin can approve a mass-balance override.")
     if errors:
         raise HTTPException(422, detail=errors)
 
     batch = Batch(code=next_batch_code(session), buyer=body.buyer.strip() or Batch().buyer,
-                  created_by=body.created_by)
+                  created_by=body.created_by, season=season)
     session.add(batch)
     session.commit()
     session.refresh(batch)
     for c in body.contributions:
         farm = session.get(Farm, c.farm_id)
         current_version = latest_boundary_version(session, c.farm_id)
-        contribution = BatchContribution(batch_id=batch.id, farm_id=c.farm_id,
-                                          bags=c.bags, kg_per_bag=c.kg_per_bag,
-                                          boundary_version_id=current_version.id if current_version else None)
+        is_override = overrides_needed.get(c.farm_id, False)
+        contribution = BatchContribution(
+            batch_id=batch.id, farm_id=c.farm_id, bags=c.bags, kg_per_bag=c.kg_per_bag,
+            boundary_version_id=current_version.id if current_version else None,
+            override_reason=c.override_reason if is_override else None,
+            override_note=c.override_note.strip() if is_override else "",
+            overridden_by=c.overridden_by.strip() if is_override else "",
+            overridden_at=datetime.now(timezone.utc) if is_override else None,
+        )
         session.add(contribution)
         session.commit()
         session.refresh(contribution)

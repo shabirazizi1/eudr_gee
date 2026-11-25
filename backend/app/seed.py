@@ -8,10 +8,11 @@ Usage (from the backend folder):
 import json
 import math
 import sys
+from datetime import datetime, timezone
 
 from sqlmodel import Session, SQLModel, select
 
-from . import geo
+from . import config, geo
 from .db import engine, init_db
 from .main import create_bags, create_boundary_version, latest_boundary_version  # reuse API logic
 from .models import Batch, BatchContribution, BoundaryVersion, Farm
@@ -34,8 +35,11 @@ DEMO = [
      "gps_walk", 7.1, 0),  # High: 0.65 ha loss, 2021-23
 ]
 
-# Demo shipment batch: bag counts for the Low-risk farms it bundles
-BATCH_BAGS = {"Adom Cocoa Farm": 18, "Benso Cocoa Farm": 14, "Aseda Cocoa Farm": 22, "Asempa Cocoa Farm": 16}
+# Demo shipment batch: bag counts for the Low-risk farms it bundles -- each comfortably within
+# its farm's mass-balance capacity (area x YIELD_KG_PER_HA, issue #6). Kuma's declared 1.2 ha
+# caps it at 720 kg (11.25 bags), far below the 15-bag default other farms get.
+BATCH_BAGS = {"Adom Cocoa Farm": 18, "Benso Cocoa Farm": 14, "Aseda Cocoa Farm": 22,
+              "Asempa Cocoa Farm": 16, "Kuma Cocoa Plot": 10}
 
 # One point-captured demo farm (issue #5, EUDR <= 4 ha): the exact centre of Adom Cocoa Farm's
 # GEE-verified clear spot (confirmed directly via gee_service.gee_screen -- zero Hansen loss, no
@@ -144,7 +148,7 @@ def main():
                 if low_farms:
                     batch = Batch(code="BATCH-2026-001",
                                   buyer="Chocolaterie Vandermeer, Ghent, Belgium",
-                                  created_by="Demo seed")
+                                  created_by="Demo seed", season=config.DEFAULT_SEASON)
                     s.add(batch)
                     s.commit()
                     s.refresh(batch)
@@ -163,6 +167,31 @@ def main():
                     s.commit()
                     print(f"Seeded {batch.code}: {len(low_farms)} farms, {total_bags} bags "
                           f"({total_bags} bag labels).")
+
+                    # One demo mass-balance override (issue #6, optional): a second shipment in
+                    # the same season pushes Adom past its remaining capacity, approved by an admin.
+                    adom = next((f for f in low_farms if f.name == "Adom Cocoa Farm"), None)
+                    if adom and not s.exec(select(Batch).where(Batch.code == "BATCH-2026-002")).first():
+                        batch2 = Batch(code="BATCH-2026-002", buyer="Artisan du Chocolat, Lyon, France",
+                                      created_by="Demo seed", season=config.DEFAULT_SEASON)
+                        s.add(batch2)
+                        s.commit()
+                        s.refresh(batch2)
+                        bv = latest_boundary_version(s, adom.id)
+                        override_bags = 25  # 1,600 kg -- exceeds Adom's remaining season capacity
+                        contribution2 = BatchContribution(
+                            batch_id=batch2.id, farm_id=adom.id, bags=override_bags, kg_per_bag=64.0,
+                            boundary_version_id=bv.id if bv else None,
+                            override_reason="Second harvest", override_note="Second flowering this season, confirmed by field visit.",
+                            overridden_by="Nadia Owusu", overridden_at=datetime.now(timezone.utc),
+                        )
+                        s.add(contribution2)
+                        s.commit()
+                        s.refresh(contribution2)
+                        create_bags(s, batch2, contribution2, adom)
+                        s.commit()
+                        print(f"Seeded {batch2.code}: 1 farm, {override_bags} bags, "
+                              f"with a mass-balance override on Adom Cocoa Farm.")
 
 
 if __name__ == "__main__":
