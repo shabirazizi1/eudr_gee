@@ -64,15 +64,51 @@ def self_intersects(geojson: dict) -> bool:
 
 
 def validate(geojson: dict) -> list[str]:
-    """Return a list of blocking errors (empty list = valid)."""
+    """Return a list of blocking errors (empty list = valid). A Point (issue #5, EUDR plots
+    <= 4 ha) only needs valid coordinates here -- its declared area is checked separately by
+    `validate_declared_area`, since that depends on the agent's input, not the geometry."""
+    if geojson.get("type") == "Point":
+        coords = geojson.get("coordinates")
+        if not (isinstance(coords, list) and len(coords) == 2):
+            return ["A point boundary needs [longitude, latitude] coordinates."]
+        return []
     errors = []
     if geojson.get("type") != "Polygon":
-        return ["Geometry must be a GeoJSON Polygon."]
+        return ["Geometry must be a GeoJSON Polygon or Point."]
     if vertex_count(geojson) < 3:
         errors.append("A farm boundary needs at least 3 points.")
     elif self_intersects(geojson):
         errors.append("Boundary crosses itself. Redraw it without crossing lines.")
     return errors
+
+
+MAX_POINT_CAPTURE_HA = 4.0  # EUDR: plots this size or smaller may be declared as a single point
+
+
+def validate_declared_area(declared_area_ha) -> list[str]:
+    """Issue #5: a point capture must declare an area in (0, 4] ha."""
+    if declared_area_ha is None or declared_area_ha <= 0:
+        return ["Declared area must be greater than 0 ha."]
+    if declared_area_ha > MAX_POINT_CAPTURE_HA:
+        return ["Plots over 4 ha need a full boundary."]
+    return []
+
+
+def point_buffer_polygon(lon: float, lat: float, area_ha: float, n: int = 32) -> dict:
+    """Approximates a circle of the given area around (lon, lat) as an n-gon GeoJSON Polygon.
+    Used wherever a Point capture needs a Polygon shape -- Earth Engine screening, map/PDF
+    rendering -- while the farm's actual stored geometry (and the due-diligence export) keep the
+    true Point, as EUDR requires for plots <= 4 ha.
+    """
+    radius_m = math.sqrt(max(area_ha, 0) * 10_000 / math.pi)
+    pts = []
+    for i in range(n):
+        a = 2 * math.pi * i / n
+        dlat = (radius_m * math.cos(a)) / 111_320
+        dlon = (radius_m * math.sin(a)) / (111_320 * math.cos(math.radians(lat)))
+        pts.append([round(lon + dlon, 6), round(lat + dlat, 6)])
+    pts.append(pts[0])
+    return {"type": "Polygon", "coordinates": [pts]}
 
 
 def sanity_flags(area: float) -> list[str]:

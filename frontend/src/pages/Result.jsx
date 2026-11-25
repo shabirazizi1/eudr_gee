@@ -9,6 +9,13 @@ import RiskBadge from '../components/RiskBadge.jsx'
 // HLR-05 / DEL-02 – admin review / dispute workflow for farms Under review
 const REVIEW_REASONS = ['Cloud cover', 'Natural clearing', 'Replanting of existing cocoa', 'Boundary error', 'Other']
 
+// Issue #5: a declared-area point capture (EUDR <= 4 ha) is labelled "Point (declared X ha)"
+// everywhere a capture method is shown.
+function captureLabel(f) {
+  if (f.capture_method === 'gps_point') return `Point (declared ${(f.declared_area_ha ?? f.area_ha ?? 0).toFixed(2)} ha)`
+  return f.capture_method === 'gps_walk' ? 'GPS walk' : 'Drawn on map'
+}
+
 function ReviewPanel({ farm, isAdmin, onReviewed }) {
   const [decision, setDecision] = useState(null) // 'clear' | 'confirm' | null
   const [reason, setReason] = useState(REVIEW_REASONS[0])
@@ -122,9 +129,9 @@ function BoundaryHistory({ farm }) {
                 <span className="small muted">{new Date(v.created_at).toLocaleDateString()}</span>
               </div>
               <div className="small">
-                {v.capture_method === 'gps_walk' ? 'GPS walk' : 'Drawn on map'}
-                {v.capture_method === 'gps_walk' && v.gps_accuracy_m != null ? ` · ±${v.gps_accuracy_m.toFixed(1)} m` : ''}
-                {` · ${v.area_ha.toFixed(2)} ha`}{v.captured_by ? ` · ${v.captured_by}` : ''}
+                {captureLabel(v)}
+                {v.capture_method !== 'drawn' && v.gps_accuracy_m != null ? ` · ±${v.gps_accuracy_m.toFixed(1)} m` : ''}
+                {v.capture_method !== 'gps_point' ? ` · ${v.area_ha.toFixed(2)} ha` : ''}{v.captured_by ? ` · ${v.captured_by}` : ''}
               </div>
             </div>
           ))}
@@ -217,9 +224,9 @@ export default function Result() {
               <div className="scale"><i style={{ left: `${v.score}%` }} /></div>
               <div className="row between small muted"><span>0 · Lower risk</span><span>100 · Higher risk</span></div>
               <ul className="facts">
-                <li><span>Capture method</span><b>{farm.capture_method === 'gps_walk' ? 'GPS walk' : 'Drawn on map'}</b></li>
+                <li><span>Capture method</span><b>{captureLabel(farm)}</b></li>
                 <li><span>GPS accuracy</span><b>
-                  {farm.capture_method === 'gps_walk' && farm.gps_accuracy_m != null
+                  {farm.capture_method !== 'drawn' && farm.gps_accuracy_m != null
                     ? `±${farm.gps_accuracy_m.toFixed(1)} m avg${farm.flagged_points ? ` · ${farm.flagged_points} flagged` : ''}`
                     : '–'}
                 </b></li>

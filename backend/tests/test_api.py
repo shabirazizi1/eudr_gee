@@ -1,5 +1,6 @@
 import base64
 import io
+import json
 
 import pymupdf
 from PIL import Image
@@ -29,6 +30,19 @@ SELF_INTERSECTING = {
     "consent_date": "2026-10-01",
 }
 
+POINT_FARM = {
+    "name": "Tiny Cocoa Plot",
+    "farmer_name": "Kwame Asante",
+    "village": "Enchi Rd",
+    "geometry": {"type": "Point", "coordinates": [-2.4305, 5.8003]},
+    "capture_method": "gps_point",
+    "gps_accuracy_m": 4.5,
+    "flagged_points": 0,
+    "declared_area_ha": 1.5,
+    "consent_given": True,
+    "consent_date": "2026-10-01",
+}
+
 
 def _tiny_jpeg_base64() -> str:
     buf = io.BytesIO()
@@ -36,8 +50,8 @@ def _tiny_jpeg_base64() -> str:
     return base64.b64encode(buf.getvalue()).decode()
 
 
-def create_verified_farm(client, mock_screen, **screen_overrides):
-    farm = client.post("/api/farms", json=VALID_FARM).json()
+def create_verified_farm(client, mock_screen, farm_payload=None, **screen_overrides):
+    farm = client.post("/api/farms", json=farm_payload or VALID_FARM).json()
     mock_screen(**screen_overrides)
     verified = client.post(f"/api/farms/{farm['id']}/verify").json()
     return verified
@@ -63,6 +77,42 @@ def test_create_farm_stores_gps_walk_capture_method_and_accuracy(client):
 def test_create_farm_rejects_self_intersecting_polygon(client):
     r = client.post("/api/farms", json=SELF_INTERSECTING)
     assert r.status_code == 422
+
+
+# ---------------------------------------------------------------- point capture (issue #5)
+
+def test_create_point_farm_within_4ha_is_accepted(client):
+    r = client.post("/api/farms", json=POINT_FARM)
+    assert r.status_code == 201
+    body = r.json()
+    assert body["capture_method"] == "gps_point"
+    assert body["declared_area_ha"] == 1.5
+    assert body["area_ha"] == 1.5
+    assert body["vertices"] == 0
+    assert body["perimeter_m"] == 0
+    # the display geometry is a buffered polygon, not the raw point (for maps/PDFs)
+    assert body["geometry"]["type"] == "Polygon"
+
+
+def test_create_point_farm_over_4ha_is_rejected(client):
+    r = client.post("/api/farms", json={**POINT_FARM, "declared_area_ha": 4.5})
+    assert r.status_code == 422
+    assert any("4 ha" in d for d in r.json()["detail"])
+
+
+def test_create_point_farm_without_declared_area_is_rejected(client):
+    r = client.post("/api/farms", json={**POINT_FARM, "declared_area_ha": None})
+    assert r.status_code == 422
+
+
+def test_polygon_farms_are_unaffected_by_point_capture(client):
+    r = client.post("/api/farms", json=VALID_FARM)
+    assert r.status_code == 201
+    body = r.json()
+    assert body["capture_method"] == "gps_walk"
+    assert body["declared_area_ha"] is None
+    assert body["geometry"]["type"] == "Polygon"
+    assert body["vertices"] > 0
 
 
 # ---------------------------------------------------------------- consent & data minimization (issue #7)
@@ -134,6 +184,25 @@ def test_farm_evidence_pdf_has_no_full_farmer_name_or_consent(client, mock_scree
     assert VALID_FARM["village"] not in text
     assert "consent" not in text.lower()
     assert "AM" in text  # farmer initials still shown
+
+
+def test_point_farm_evidence_and_batch_pdfs_render(client, mock_screen):
+    """A point-captured farm's PDFs must render using the buffered display geometry, not the
+    raw GeoJSON Point (which would crash the map/boundary-table code) -- issue #5."""
+    point_farm = create_verified_farm(client, mock_screen, farm_payload=POINT_FARM)
+
+    r = client.get(f"/api/farms/{point_farm['id']}/report.pdf")
+    assert r.status_code == 200
+    text = "\n".join(p.get_text() for p in pymupdf.open(stream=r.content, filetype="pdf"))
+    assert "Point (declared 1.50 ha)" in text
+
+    batch = client.post("/api/batches", json={
+        "contributions": [{"farm_id": point_farm["id"], "bags": 3}],
+    }).json()
+    r = client.get(f"/api/batches/{batch['id']}/report.pdf")
+    assert r.status_code == 200
+    text = "\n".join(p.get_text() for p in pymupdf.open(stream=r.content, filetype="pdf"))
+    assert "Point (declared 1.50 ha)" in text
 
 
 # ---------------------------------------------------------------- batches & review
@@ -263,6 +332,55 @@ def test_batch_keeps_the_boundary_version_it_was_built_with(client, mock_screen)
     assert got["contributions"][0]["farm"]["geometry"] == v1_geometry
     # the live farm record itself did move on
     assert client.get(f"/api/farms/{verified['id']}").json()["boundary_version"] == 2
+
+
+# ---------------------------------------------------------------- due-diligence geolocation export (issue #5)
+
+def test_batch_geolocation_export_is_valid(client, mock_screen):
+    polygon_farm = create_verified_farm(client, mock_screen)
+    point_farm = create_verified_farm(client, mock_screen, farm_payload=POINT_FARM)
+    batch = client.post("/api/batches", json={
+        "contributions": [
+            {"farm_id": polygon_farm["id"], "bags": 5},
+            {"farm_id": point_farm["id"], "bags": 3},
+        ],
+    }).json()
+
+    r = client.get(f"/api/batches/{batch['id']}/geolocation.geojson")
+    assert r.status_code == 200
+    assert "geo+json" in r.headers["content-type"]
+    data = r.json()
+    assert data["type"] == "FeatureCollection"
+    assert len(data["features"]) == 2
+
+    by_code = {f["properties"]["farm_code"]: f for f in data["features"]}
+    poly_feature = by_code[polygon_farm["code"]]
+    point_feature = by_code[point_farm["code"]]
+
+    # correct geometry types: Polygon stays a Polygon, a <=4 ha point stays a true Point
+    assert poly_feature["geometry"]["type"] == "Polygon"
+    assert point_feature["geometry"]["type"] == "Point"
+
+    # coordinates rounded to 6 decimals
+    for lon, lat in poly_feature["geometry"]["coordinates"][0]:
+        assert round(lon, 6) == lon and round(lat, 6) == lat
+    plon, plat = point_feature["geometry"]["coordinates"]
+    assert round(plon, 6) == plon and round(plat, 6) == plat
+
+    # required properties, and no personal data in them
+    for props in (poly_feature["properties"], point_feature["properties"]):
+        assert props["farm_code"]
+        assert props["area_ha"] > 0
+        assert props["producer_country"] == "GH"
+        assert props["commodity"] == "Cocoa beans (HS 1801)"
+        assert "production_period" in props
+        assert props["boundary_version"] == 1
+        assert props["verification_date"]
+        assert props["status"]
+
+    dumped = json.dumps(data)
+    assert VALID_FARM["farmer_name"] not in dumped
+    assert POINT_FARM["farmer_name"] not in dumped
 
 
 # ---------------------------------------------------------------- bags (public QR target)

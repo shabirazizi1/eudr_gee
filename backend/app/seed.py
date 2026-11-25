@@ -37,6 +37,15 @@ DEMO = [
 # Demo shipment batch: bag counts for the Low-risk farms it bundles
 BATCH_BAGS = {"Adom Cocoa Farm": 18, "Benso Cocoa Farm": 14, "Aseda Cocoa Farm": 22, "Asempa Cocoa Farm": 16}
 
+# One point-captured demo farm (issue #5, EUDR <= 4 ha): the exact centre of Adom Cocoa Farm's
+# GEE-verified clear spot (confirmed directly via gee_service.gee_screen -- zero Hansen loss, no
+# protected-area overlap, stable NDVI) -- a blind nearby offset previously landed in a real loss
+# patch and scored High.
+POINT_FARM_DEMO = {
+    "name": "Kuma Cocoa Plot", "farmer": "Yaw Mensah", "village": "Asankrangwa",
+    "lat": 5.8500, "lon": -2.4100, "declared_area_ha": 1.2, "gps_accuracy_m": 4.0,
+}
+
 
 def ring(lat, lon, radius_m, n, wobble=0.18):
     pts = []
@@ -70,6 +79,20 @@ def main():
                      consent_method="attestation", consent_given=True, consent_date="2026-10-01")
             s.add(f)
             created.append(f)
+
+        pf = POINT_FARM_DEMO
+        if pf["name"] not in existing:
+            point_geom = {"type": "Point", "coordinates": [pf["lon"], pf["lat"]]}
+            f = Farm(code=f"GH-{241 + n + len(DEMO):04d}", name=pf["name"], farmer_name=pf["farmer"],
+                     village=pf["village"], geometry=json.dumps(point_geom),
+                     area_ha=pf["declared_area_ha"], perimeter_m=0.0, vertices=0,
+                     declared_area_ha=pf["declared_area_ha"],
+                     harvest_date="2026-10-15", captured_by="Demo seed", capture_method="gps_point",
+                     gps_accuracy_m=pf["gps_accuracy_m"], flagged_points=0,
+                     consent_method="attestation", consent_given=True, consent_date="2026-10-01")
+            s.add(f)
+            created.append(f)
+
         s.commit()
         for f in created:
             create_boundary_version(s, f)  # v1 for every newly created demo farm (issue #4)

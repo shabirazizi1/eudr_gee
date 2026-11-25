@@ -14,7 +14,7 @@ from sqlmodel import Session, select
 from . import config, geo, gee_service, scoring
 from .db import get_session, init_db
 from .models import Bag, Batch, BatchContribution, BoundaryVersion, Farm, Review, Verification
-from .report import build_bag_labels_pdf, build_batch_pdf, build_pdf
+from .report import COMMODITY, build_bag_labels_pdf, build_batch_pdf, build_pdf
 
 
 @asynccontextmanager
@@ -40,10 +40,11 @@ class FarmCreate(BaseModel):
     harvest_date: Optional[str] = None
     crop: str = "Cocoa"
     captured_by: str = ""
-    geometry: dict  # GeoJSON Polygon
-    capture_method: str = "drawn"  # "gps_walk" or "drawn"
+    geometry: dict  # GeoJSON Polygon, or Point for a declared-area capture (issue #5)
+    capture_method: str = "drawn"  # "gps_walk", "drawn", or "gps_point"
     gps_accuracy_m: Optional[float] = None
     flagged_points: int = 0
+    declared_area_ha: Optional[float] = None  # required for a Point capture (EUDR <= 4 ha)
     consent_given: bool = False
     consent_date: Optional[str] = None
     consent_photo_base64: Optional[str] = None  # optional signed-form photo (data URL or raw base64)
@@ -71,18 +72,56 @@ class ReviewCreate(BaseModel):
 class RemapCreate(BaseModel):
     """Remapping reuses the farm's existing consent -- issue #4 says nothing about consent, so
     no new consent is asked for here."""
-    geometry: dict  # GeoJSON Polygon
-    capture_method: str = "drawn"  # "gps_walk" or "drawn"
+    geometry: dict  # GeoJSON Polygon, or Point for a declared-area capture (issue #5)
+    capture_method: str = "drawn"  # "gps_walk", "drawn", or "gps_point"
     gps_accuracy_m: Optional[float] = None
     flagged_points: int = 0
     captured_by: str = ""
+    declared_area_ha: Optional[float] = None
 
 
 def needs_field_audit(farm: Farm) -> bool:
-    """HLR-01: audit required if drawn on a map, or walked with avg accuracy worse than 10 m."""
-    if farm.capture_method == "gps_walk":
+    """HLR-01: audit required if drawn on a map, or GPS-captured (walk or point) with avg
+    accuracy worse than 10 m."""
+    if farm.capture_method in ("gps_walk", "gps_point"):
         return farm.gps_accuracy_m is None or farm.gps_accuracy_m > 10
     return True
+
+
+def validate_geometry(geometry: dict, declared_area_ha: Optional[float] = None) -> list[str]:
+    """Shared by create and remap: a Polygon validates as before; a Point (issue #5, EUDR
+    plots <= 4 ha) also needs a valid declared area."""
+    errors = geo.validate(geometry)
+    if errors:
+        return errors
+    if geometry.get("type") == "Point":
+        return geo.validate_declared_area(declared_area_ha)
+    return []
+
+
+def geometry_fields(geometry: dict, declared_area_ha: Optional[float] = None) -> dict:
+    """area_ha/perimeter_m/vertices/declared_area_ha for either a drawn/walked Polygon or a
+    declared-area Point (issue #5)."""
+    if geometry.get("type") == "Point":
+        area = round(declared_area_ha, 2)
+        return {"area_ha": area, "perimeter_m": 0.0, "vertices": 0, "declared_area_ha": area}
+    return {
+        "area_ha": round(geo.area_ha(geometry), 2),
+        "perimeter_m": round(geo.perimeter_m(geometry), 1),
+        "vertices": geo.vertex_count(geometry),
+        "declared_area_ha": None,
+    }
+
+
+def display_geometry(geometry_str: str, declared_area_ha: Optional[float]) -> dict:
+    """The stored geometry is a true GeoJSON Point for a declared-area capture (issue #5) --
+    the due-diligence export needs that real Point. Everything else that expects a Polygon shape
+    (maps, PDFs, Earth Engine screening) gets this buffered-circle stand-in instead."""
+    raw = json.loads(geometry_str)
+    if raw.get("type") == "Point":
+        lon, lat = raw["coordinates"]
+        return geo.point_buffer_polygon(lon, lat, declared_area_ha or 0)
+    return raw
 
 
 def is_batchable(farm: Farm) -> bool:
@@ -104,7 +143,7 @@ def farm_out(farm: Farm, latest: Optional[Verification] = None, reviews: Optiona
              session: Optional[Session] = None) -> dict:
     d = farm.model_dump()
     d.pop("consent_photo_path", None)  # the photo itself is only ever served via /consent_photo
-    d["geometry"] = json.loads(farm.geometry)
+    d["geometry"] = display_geometry(farm.geometry, farm.declared_area_ha)
     d["needs_field_audit"] = needs_field_audit(farm)
     if session is not None:
         lbv = latest_boundary_version(session, farm.id)
@@ -140,13 +179,14 @@ def farm_out_public(farm: Farm, latest: Optional[Verification] = None) -> dict:
         "region": farm.region,
         "crop": farm.crop,
         "harvest_date": farm.harvest_date,
-        "geometry": json.loads(farm.geometry),
+        "geometry": display_geometry(farm.geometry, farm.declared_area_ha),
         "area_ha": farm.area_ha,
         "perimeter_m": farm.perimeter_m,
         "vertices": farm.vertices,
         "capture_method": farm.capture_method,
         "gps_accuracy_m": farm.gps_accuracy_m,
         "flagged_points": farm.flagged_points,
+        "declared_area_ha": farm.declared_area_ha,
         "risk_score": farm.risk_score,
         "risk_level": farm.risk_level,
         "status": farm.status,
@@ -205,13 +245,14 @@ def verification_for_boundary_version(session: Session, boundary_version_id: int
 def boundary_version_out(v: BoundaryVersion) -> dict:
     return {
         "version_no": v.version_no,
-        "geometry": json.loads(v.geometry),
+        "geometry": display_geometry(v.geometry, v.declared_area_ha),
         "area_ha": v.area_ha,
         "perimeter_m": v.perimeter_m,
         "vertices": v.vertices,
         "capture_method": v.capture_method,
         "gps_accuracy_m": v.gps_accuracy_m,
         "flagged_points": v.flagged_points,
+        "declared_area_ha": v.declared_area_ha,
         "captured_by": v.captured_by,
         "created_at": v.created_at.isoformat(),
     }
@@ -226,7 +267,7 @@ def create_boundary_version(session: Session, farm: Farm) -> BoundaryVersion:
         geometry=farm.geometry, area_ha=farm.area_ha, perimeter_m=farm.perimeter_m,
         vertices=farm.vertices, capture_method=farm.capture_method,
         gps_accuracy_m=farm.gps_accuracy_m, flagged_points=farm.flagged_points,
-        captured_by=farm.captured_by,
+        declared_area_ha=farm.declared_area_ha, captured_by=farm.captured_by,
     )
     session.add(version)
     session.commit()
@@ -310,10 +351,11 @@ def batch_out(session: Session, batch: Batch, public: bool = False) -> dict:
             bv = session.get(BoundaryVersion, c.boundary_version_id)
             if bv:
                 farm_payload.update({
-                    "geometry": json.loads(bv.geometry), "area_ha": bv.area_ha,
+                    "geometry": display_geometry(bv.geometry, bv.declared_area_ha), "area_ha": bv.area_ha,
                     "perimeter_m": bv.perimeter_m, "vertices": bv.vertices,
                     "capture_method": bv.capture_method, "gps_accuracy_m": bv.gps_accuracy_m,
-                    "flagged_points": bv.flagged_points, "boundary_version": bv.version_no,
+                    "flagged_points": bv.flagged_points, "declared_area_ha": bv.declared_area_ha,
+                    "boundary_version": bv.version_no,
                 })
                 v_for_version = verification_for_boundary_version(session, bv.id)
                 if v_for_version:
@@ -365,10 +407,10 @@ def list_farms(session: Session = Depends(get_session)):
 def create_farm(body: FarmCreate, session: Session = Depends(get_session)):
     if not body.consent_given or not (body.consent_date or "").strip():
         raise HTTPException(422, detail=["Farmer consent (checkbox + date) is required before a farm can be submitted."])
-    errors = geo.validate(body.geometry)
+    errors = validate_geometry(body.geometry, body.declared_area_ha)
     if errors:
         raise HTTPException(422, detail=errors)
-    area = geo.area_ha(body.geometry)
+    fields = geometry_fields(body.geometry, body.declared_area_ha)
     farm = Farm(
         code=next_code(session),
         name=body.name.strip(),
@@ -378,9 +420,10 @@ def create_farm(body: FarmCreate, session: Session = Depends(get_session)):
         crop=body.crop,
         captured_by=body.captured_by,
         geometry=json.dumps(body.geometry),
-        area_ha=round(area, 2),
-        perimeter_m=round(geo.perimeter_m(body.geometry), 1),
-        vertices=geo.vertex_count(body.geometry),
+        area_ha=fields["area_ha"],
+        perimeter_m=fields["perimeter_m"],
+        vertices=fields["vertices"],
+        declared_area_ha=fields["declared_area_ha"],
         capture_method=body.capture_method,
         gps_accuracy_m=body.gps_accuracy_m,
         flagged_points=body.flagged_points,
@@ -398,7 +441,7 @@ def create_farm(body: FarmCreate, session: Session = Depends(get_session)):
         session.refresh(farm)
     create_boundary_version(session, farm)  # v1 (issue #4)
     out = farm_out(farm, reviews=[], session=session)
-    out["warnings"] = geo.sanity_flags(area)
+    out["warnings"] = geo.sanity_flags(fields["area_ha"])
     return out
 
 
@@ -419,14 +462,15 @@ def remap_farm(farm_id: int, body: RemapCreate, session: Session = Depends(get_s
     farm = session.get(Farm, farm_id)
     if not farm:
         raise HTTPException(404, "Farm not found")
-    errors = geo.validate(body.geometry)
+    errors = validate_geometry(body.geometry, body.declared_area_ha)
     if errors:
         raise HTTPException(422, detail=errors)
-    area = geo.area_ha(body.geometry)
+    fields = geometry_fields(body.geometry, body.declared_area_ha)
     farm.geometry = json.dumps(body.geometry)
-    farm.area_ha = round(area, 2)
-    farm.perimeter_m = round(geo.perimeter_m(body.geometry), 1)
-    farm.vertices = geo.vertex_count(body.geometry)
+    farm.area_ha = fields["area_ha"]
+    farm.perimeter_m = fields["perimeter_m"]
+    farm.vertices = fields["vertices"]
+    farm.declared_area_ha = fields["declared_area_ha"]
     farm.capture_method = body.capture_method
     farm.gps_accuracy_m = body.gps_accuracy_m
     farm.flagged_points = body.flagged_points
@@ -440,7 +484,7 @@ def remap_farm(farm_id: int, body: RemapCreate, session: Session = Depends(get_s
     session.refresh(farm)
     create_boundary_version(session, farm)
     out = farm_out(farm, reviews=farm_reviews(session, farm.id), session=session)
-    out["warnings"] = geo.sanity_flags(area)
+    out["warnings"] = geo.sanity_flags(fields["area_ha"])
     return out
 
 
@@ -457,9 +501,11 @@ def verify_farm(farm_id: int, session: Session = Depends(get_session)):
     farm = session.get(Farm, farm_id)
     if not farm:
         raise HTTPException(404, "Farm not found")
-    geometry = json.loads(farm.geometry)
+    # A Point capture (issue #5, EUDR <= 4 ha) is screened as a circle buffered to the declared
+    # area, since Hansen/NDVI/WDPA need an actual region, not a single pixel.
+    screening_geometry = display_geometry(farm.geometry, farm.declared_area_ha)
     try:
-        result = gee_service.screen(geometry, farm.area_ha)
+        result = gee_service.screen(screening_geometry, farm.area_ha)
     except Exception as e:  # noqa: BLE001
         raise HTTPException(502, f"Satellite screening failed: {e}")
     s = scoring.score(result)
@@ -540,11 +586,11 @@ def farm_report(farm_id: int, session: Session = Depends(get_session)):
     # actually run against, not the farm's current one -- they can differ after a remap that
     # hasn't been re-verified yet (issue #4).
     bv = session.get(BoundaryVersion, v.boundary_version_id) if v.boundary_version_id else None
-    geometry = json.loads(bv.geometry) if bv else None
+    geometry = display_geometry(bv.geometry, bv.declared_area_ha) if bv else None
     facts_override = {
         "area_ha": bv.area_ha, "perimeter_m": bv.perimeter_m, "vertices": bv.vertices,
         "capture_method": bv.capture_method, "gps_accuracy_m": bv.gps_accuracy_m,
-        "flagged_points": bv.flagged_points,
+        "flagged_points": bv.flagged_points, "declared_area_ha": bv.declared_area_ha,
     } if bv else None
     pdf = build_pdf(farm, v, reviews, geometry=geometry, boundary_version_no=(bv.version_no if bv else None),
                     facts_override=facts_override)
@@ -637,6 +683,56 @@ def batch_report(batch_id: int, session: Session = Depends(get_session)):
     pdf = build_batch_pdf(batch, data)
     return Response(pdf, media_type="application/pdf", headers={
         "Content-Disposition": f'attachment; filename="shipment_{batch.code}.pdf"'})
+
+
+def geolocation_feature(farm: Farm, boundary_version_id: Optional[int], session: Session) -> dict:
+    """One EUDR due-diligence geolocation feature for a farm: a true Point (<= 4 ha, issue #5)
+    or Polygon -- never the buffered-circle stand-in `display_geometry` returns -- with
+    coordinates rounded to 6 decimals and only non-personal properties (issue #7: no farmer
+    names). Uses the boundary version (and its verification) the farm was on when it joined the
+    batch, so a later remap doesn't change an already-exported batch's geolocation data.
+    """
+    bv = session.get(BoundaryVersion, boundary_version_id) if boundary_version_id else latest_boundary_version(session, farm.id)
+    raw = json.loads(bv.geometry) if bv else json.loads(farm.geometry)
+    if raw["type"] == "Point":
+        lon, lat = raw["coordinates"]
+        geometry = {"type": "Point", "coordinates": [round(lon, 6), round(lat, 6)]}
+    else:
+        ring = [[round(lon, 6), round(lat, 6)] for lon, lat in raw["coordinates"][0]]
+        geometry = {"type": "Polygon", "coordinates": [ring]}
+    v = verification_for_boundary_version(session, bv.id) if bv else latest_verification(session, farm.id)
+    return {
+        "type": "Feature",
+        "geometry": geometry,
+        "properties": {
+            "farm_code": farm.code,
+            "area_ha": bv.area_ha if bv else farm.area_ha,
+            "producer_country": "GH",
+            "commodity": COMMODITY,
+            "production_period": farm.harvest_date,
+            "boundary_version": bv.version_no if bv else None,
+            "verification_date": v.created_at.date().isoformat() if v else None,
+            "status": farm.status,
+        },
+    }
+
+
+@app.get("/api/batches/{batch_id}/geolocation.geojson")
+def batch_geolocation(batch_id: int, session: Session = Depends(get_session)):
+    """EUDR due-diligence geolocation export (not asked for by issue #5's own text -- added on
+    request): a GeoJSON FeatureCollection, one feature per contributing farm."""
+    batch = session.get(Batch, batch_id)
+    if not batch:
+        raise HTTPException(404, "Batch not found")
+    contribs = session.exec(select(BatchContribution).where(BatchContribution.batch_id == batch_id)).all()
+    features = []
+    for c in contribs:
+        farm = session.get(Farm, c.farm_id)
+        if farm:
+            features.append(geolocation_feature(farm, c.boundary_version_id, session))
+    geojson = {"type": "FeatureCollection", "features": features}
+    return Response(json.dumps(geojson), media_type="application/geo+json", headers={
+        "Content-Disposition": f'attachment; filename="geolocation_{batch.code}.geojson"'})
 
 
 @app.get("/api/batches/{batch_id}/bag_labels.pdf")
