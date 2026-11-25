@@ -544,6 +544,32 @@ def build_batch_pdf(batch, data: dict) -> bytes:
                             ("GRID", (0, 0), (-1, -1), 0.25, colors.lightgrey)]))
     els.append(ft)
 
+    # ---- Approval history (issue #15: only present for batches that went through the mass-balance
+    # approval workflow -- a batch created directly within capacity has no events) ----------------
+    events = data.get("events") or []
+    if events:
+        els.append(Spacer(1, 10))
+        els.append(Paragraph("Approval history", h2))
+        event_labels = {"submitted": "Submitted for approval", "approved": "Approved",
+                        "rejected": "Rejected", "cancelled": "Cancelled"}
+        head_white = head.clone("bcellheadwhite2", textColor=colors.white)
+        erows = [[Paragraph(h, head_white) for h in ("Event", "By", "Date", "Note")]]
+        for e in events:
+            erows.append([
+                Paragraph(event_labels.get(e["event"], e["event"]), cell),
+                Paragraph(e["by"] or "–", cell),
+                Paragraph(e["created_at"][:16].replace("T", " "), cell),
+                Paragraph(e["note"] or "–", cell),
+            ])
+        et = Table(erows, colWidths=[32 * mm, 32 * mm, 30 * mm, 76 * mm])
+        et.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, 0), GREEN),
+                                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                                ("FONTSIZE", (0, 0), (-1, 0), 8),
+                                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                                ("GRID", (0, 0), (-1, -1), 0.25, colors.lightgrey)]))
+        els.append(et)
+
     # ---- Page 2: satellite overview (kept together on its own page) -------------------------------------------------
     overview_img, is_real_overview, overview_source = _batch_map_flowable(farms)
     overview_block = [Paragraph("Satellite overview", h2), overview_img]

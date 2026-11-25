@@ -30,6 +30,7 @@ function Shell({ user, children }) {
   const nav = useNavigate()
   const [mode, setMode] = useState(null)
   const [pending, setPending] = useState(outboxCount())
+  const [pendingApprovals, setPendingApprovals] = useState(0)
   const [online, setOnline] = useState(navigator.onLine)
   const [accountOpen, setAccountOpen] = useState(false)
 
@@ -40,12 +41,16 @@ function Shell({ user, children }) {
       await flushOutbox()
       setPending(outboxCount())
     }
+    const loadApprovals = () => api.summary().then((s) => setPendingApprovals(s.pending_approvals)).catch(() => {})
     sync()
+    loadApprovals()
     const t = setInterval(() => setPending(outboxCount()), 3000)
+    const t2 = setInterval(loadApprovals, 15000)
     window.addEventListener('online', sync)
     window.addEventListener('offline', sync)
     return () => {
       clearInterval(t)
+      clearInterval(t2)
       window.removeEventListener('online', sync)
       window.removeEventListener('offline', sync)
     }
@@ -65,7 +70,9 @@ function Shell({ user, children }) {
         <NavLink to="/dashboard" className="nav-item">Overview</NavLink>
         <NavLink to="/capture" className="nav-item">Farm registry</NavLink>
         <NavLink to="/farms" className="nav-item">Satellite verification</NavLink>
-        <NavLink to="/batches" className="nav-item">Batches</NavLink>
+        <NavLink to="/batches" className="nav-item">
+          Batches{pendingApprovals > 0 && <span className="pill warn small" style={{ marginLeft: 8 }}>{pendingApprovals}</span>}
+        </NavLink>
         <div className="sidebar-foot">
           <div className="harvest">2026 / 27 harvest<br /><small>Ghana · Western Region</small></div>
           <button className="link-btn" onClick={logout}>Sign out</button>
@@ -98,7 +105,12 @@ function Shell({ user, children }) {
         {TABS.map((t) => (
           <NavLink key={t.to} to={t.to} className="tab-item">
             <span className="tab-icon">{t.icon}</span>
-            <span>{t.label}</span>
+            <span>
+              {t.label}
+              {t.to === '/batches' && pendingApprovals > 0 && (
+                <span className="pill warn small" style={{ marginLeft: 4 }}>{pendingApprovals}</span>
+              )}
+            </span>
           </NavLink>
         ))}
         <button type="button" className={`tab-item ${accountOpen ? 'active' : ''}`} onClick={() => setAccountOpen(true)}>

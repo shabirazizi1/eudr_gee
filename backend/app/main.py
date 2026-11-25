@@ -13,7 +13,7 @@ from sqlmodel import Session, select
 
 from . import config, geo, gee_service, scoring
 from .db import get_session, init_db
-from .models import Bag, Batch, BatchContribution, BoundaryVersion, Farm, Review, Verification
+from .models import Bag, Batch, BatchContribution, BatchEvent, BoundaryVersion, Farm, Review, Verification
 from .report import COMMODITY, build_bag_labels_pdf, build_batch_pdf, build_pdf
 
 
@@ -55,20 +55,37 @@ class BatchContributionIn(BaseModel):
     farm_id: int
     bags: int
     kg_per_bag: float = 64.0
-    # Mass-balance override (issue #6): required only if this contribution exceeds the farm's
-    # remaining season capacity. `overridden_by_role` mirrors the no-real-auth pattern used by
-    # /review -- the UI restricts the override action to admins, the backend validates the role.
-    override_reason: Optional[str] = None
-    override_note: str = ""
-    overridden_by: str = ""
-    overridden_by_role: Optional[str] = None
 
 
 class BatchCreate(BaseModel):
     buyer: str = "Chocolaterie Vandermeer, Ghent, Belgium"
     created_by: str = ""
+    created_by_role: Optional[str] = None
     season: str = config.DEFAULT_SEASON
     contributions: list[BatchContributionIn]
+    # Mass-balance approval workflow (issue #15): required only if some contribution exceeds its
+    # farm's remaining season capacity -- the batch is then created "Pending approval" instead of
+    # being blocked outright. `overridden_by_role` mirrors the no-real-auth pattern used elsewhere.
+    justification_note: Optional[str] = None
+
+
+class ContributionOverrideIn(BaseModel):
+    contribution_id: int
+    override_reason: str
+    override_note: str = ""
+
+
+class BatchApproveIn(BaseModel):
+    approved_by: str = ""
+    approved_by_role: Optional[str] = None
+    note: str = ""
+    overrides: list[ContributionOverrideIn] = []
+
+
+class BatchDecisionIn(BaseModel):
+    by: str = ""
+    by_role: Optional[str] = None
+    reason: str = ""
 
 
 class ReviewCreate(BaseModel):
@@ -147,9 +164,16 @@ def farm_capacity_kg(session: Session, farm: Farm) -> float:
     return round(area * config.YIELD_KG_PER_HA, 1)
 
 
+RESERVED_STATUSES = ("Approved", "Pending approval")  # count toward committed capacity
+
+
 def season_committed_kg(session: Session, farm_id: int, season: str) -> float:
-    """Total kg already committed for this farm across every batch in this season."""
-    batch_ids = session.exec(select(Batch.id).where(Batch.season == season)).all()
+    """Total kg already committed for this farm across every batch in this season. A batch
+    Pending approval still reserves its kg (issue #15), so the same kilos can't be used twice
+    while it waits -- Rejected/Cancelled batches release it back by being excluded here."""
+    batch_ids = session.exec(
+        select(Batch.id).where(Batch.season == season, Batch.status.in_(RESERVED_STATUSES))
+    ).all()
     if not batch_ids:
         return 0.0
     contribs = session.exec(
@@ -161,6 +185,32 @@ def season_committed_kg(session: Session, farm_id: int, season: str) -> float:
 
 def farm_remaining_capacity_kg(session: Session, farm: Farm, season: str) -> float:
     return round(farm_capacity_kg(session, farm) - season_committed_kg(session, farm.id, season), 1)
+
+
+def contribution_capacity(session: Session, farm: Farm, season: str, kg: float, batch_status: str) -> dict:
+    """requested/remaining/overage for one contribution, for the admin's pending-approval view
+    (issue #15). `remaining` is the farm's season capacity left BEFORE this contribution -- while
+    the batch is Approved/Pending, this contribution's own kg is already part of the committed
+    total, so it's added back; once Rejected/Cancelled it no longer counts, so no adjustment."""
+    remaining_now = farm_remaining_capacity_kg(session, farm, season)
+    remaining_before = remaining_now + kg if batch_status in RESERVED_STATUSES else remaining_now
+    return {
+        "requested_kg": round(kg, 1),
+        "remaining_kg": round(remaining_before, 1),
+        "overage_kg": round(max(kg - remaining_before, 0), 1),
+        "over_capacity": kg > remaining_before,
+    }
+
+
+def batch_event_out(e: BatchEvent) -> dict:
+    return {"event": e.event, "by": e.by, "by_role": e.by_role, "note": e.note,
+            "created_at": e.created_at.isoformat()}
+
+
+def batch_events_for(session: Session, batch_id: int) -> list[BatchEvent]:
+    return session.exec(
+        select(BatchEvent).where(BatchEvent.batch_id == batch_id).order_by(BatchEvent.created_at)
+    ).all()
 
 
 def review_out(r: Review) -> dict:
@@ -402,7 +452,8 @@ def batch_out(session: Session, batch: Batch, public: bool = False) -> dict:
                         "level": v_for_version.level,
                         **json.loads(v_for_version.result_json),
                     }
-        items.append({
+        item = {
+            "id": c.id,
             "bags": c.bags,
             "kg_per_bag": c.kg_per_bag,
             "kg": kg,
@@ -413,7 +464,10 @@ def batch_out(session: Session, batch: Batch, public: bool = False) -> dict:
                 "by": c.overridden_by,
                 "at": c.overridden_at.isoformat() if c.overridden_at else None,
             } if c.override_reason else None,
-        })
+        }
+        if batch.status == "Pending approval" and farm:
+            item["capacity"] = contribution_capacity(session, farm, batch.season, kg, batch.status)
+        items.append(item)
     return {
         "id": batch.id,
         "code": batch.code,
@@ -421,7 +475,10 @@ def batch_out(session: Session, batch: Batch, public: bool = False) -> dict:
         "season": batch.season,
         "created_at": batch.created_at.isoformat(),
         "created_by": batch.created_by,
+        "status": batch.status,
+        "submission_note": batch.submission_note,
         "contributions": items,
+        "events": [batch_event_out(e) for e in batch_events_for(session, batch.id)],
         "totals": {
             "farms": len(items),
             "bags": int(total_bags),
@@ -655,6 +712,7 @@ def summary(session: Session = Depends(get_session)):
     mass_balance_overrides = session.exec(
         select(BatchContribution).where(BatchContribution.override_reason.is_not(None))
     ).all()
+    pending_approvals = session.exec(select(Batch).where(Batch.status == "Pending approval")).all()
     return {
         "farms": len(farms),
         "hectares": round(sum(f.area_ha for f in farms), 1),
@@ -667,6 +725,7 @@ def summary(session: Session = Depends(get_session)):
         "reviewed": sum(1 for f in farms if f.status == "Verified (manual review)"),
         "excluded": sum(1 for f in farms if f.status == "Excluded"),
         "mass_balance_overrides": len(mass_balance_overrides),
+        "pending_approvals": len(pending_approvals),
     }
 
 
@@ -680,14 +739,16 @@ def list_batches(session: Session = Depends(get_session)):
 
 @app.post("/api/batches", status_code=201)
 def create_batch(body: BatchCreate, session: Session = Depends(get_session)):
-    """Issue #6: a contribution exceeding its farm's remaining season capacity is blocked unless
-    a Brand admin supplies an override reason, note and name. `season` is tracked per batch so a
-    new season resets every farm's remaining capacity."""
+    """A batch within every farm's remaining season capacity is created Approved, as before. One
+    that exceeds a farm's remaining capacity needs a justification note and is created Pending
+    approval instead (issue #15) -- no bags yet; a Brand admin approves or rejects it later on
+    the batch page. `season` is tracked per batch so a new season resets every farm's remaining
+    capacity."""
     if not body.contributions:
         raise HTTPException(422, detail=["A batch needs at least one farm contribution."])
     season = body.season.strip() or config.DEFAULT_SEASON
     errors = []
-    overrides_needed = {}  # farm_id -> True, only for contributions that actually need one
+    over_capacity = False
     for c in body.contributions:
         farm = session.get(Farm, c.farm_id)
         if not farm:
@@ -706,44 +767,126 @@ def create_batch(body: BatchCreate, session: Session = Depends(get_session)):
             continue
         kg = c.bags * c.kg_per_bag
         remaining = farm_remaining_capacity_kg(session, farm, season)
-        if kg <= remaining:
-            continue
-        overrides_needed[farm.id] = True
-        if not c.override_reason:
-            errors.append(f"{farm.name}: {kg:.0f} kg exceeds the remaining {season} capacity "
-                          f"({max(remaining, 0):.0f} kg) -- a mass-balance override is required.")
-        elif c.override_reason not in OVERRIDE_REASONS:
-            errors.append(f"{farm.name}: override reason must be one of: {', '.join(OVERRIDE_REASONS)}")
-        elif not c.override_note.strip():
-            errors.append(f"{farm.name}: a mass-balance override note is required.")
-        elif not c.overridden_by.strip():
-            errors.append(f"{farm.name}: the overriding admin's name is required.")
-        elif c.overridden_by_role != "admin":
-            errors.append(f"{farm.name}: only a Brand admin can approve a mass-balance override.")
+        if kg > remaining:
+            over_capacity = True
     if errors:
         raise HTTPException(422, detail=errors)
+    justification_note = (body.justification_note or "").strip()
+    if over_capacity and not justification_note:
+        raise HTTPException(422, detail=[
+            "One or more farms exceed their remaining season capacity -- a justification note "
+            "is required to submit this batch for admin approval."])
 
+    status = "Pending approval" if over_capacity else "Approved"
     batch = Batch(code=next_batch_code(session), buyer=body.buyer.strip() or Batch().buyer,
-                  created_by=body.created_by, season=season)
+                  created_by=body.created_by, season=season, status=status,
+                  submission_note=justification_note if over_capacity else "")
     session.add(batch)
     session.commit()
     session.refresh(batch)
     for c in body.contributions:
         farm = session.get(Farm, c.farm_id)
         current_version = latest_boundary_version(session, c.farm_id)
-        is_override = overrides_needed.get(c.farm_id, False)
         contribution = BatchContribution(
             batch_id=batch.id, farm_id=c.farm_id, bags=c.bags, kg_per_bag=c.kg_per_bag,
             boundary_version_id=current_version.id if current_version else None,
-            override_reason=c.override_reason if is_override else None,
-            override_note=c.override_note.strip() if is_override else "",
-            overridden_by=c.overridden_by.strip() if is_override else "",
-            overridden_at=datetime.now(timezone.utc) if is_override else None,
         )
         session.add(contribution)
         session.commit()
         session.refresh(contribution)
-        create_bags(session, batch, contribution, farm)
+        if status == "Approved":
+            create_bags(session, batch, contribution, farm)
+    if status == "Pending approval":
+        session.add(BatchEvent(batch_id=batch.id, event="submitted", by=body.created_by,
+                                by_role=body.created_by_role, note=justification_note))
+    session.commit()
+    return batch_out(session, batch)
+
+
+@app.post("/api/batches/{batch_id}/approve")
+def approve_batch(batch_id: int, body: BatchApproveIn, session: Session = Depends(get_session)):
+    """Issue #15: a Brand admin approves a Pending approval batch, supplying an override reason
+    and note for each line that exceeds its farm's remaining capacity, then generates its bags."""
+    batch = session.get(Batch, batch_id)
+    if not batch:
+        raise HTTPException(404, "Batch not found")
+    if body.approved_by_role != "admin":
+        raise HTTPException(403, "Only a Brand admin can approve a batch.")
+    if batch.status != "Pending approval":
+        raise HTTPException(400, "Only a batch pending approval can be approved.")
+
+    contribs = session.exec(select(BatchContribution).where(BatchContribution.batch_id == batch_id)).all()
+    overrides_by_contribution = {o.contribution_id: o for o in body.overrides}
+    errors = []
+    for c in contribs:
+        farm = session.get(Farm, c.farm_id)
+        kg = c.bags * c.kg_per_bag
+        cap = contribution_capacity(session, farm, batch.season, kg, batch.status)
+        if not cap["over_capacity"]:
+            continue
+        o = overrides_by_contribution.get(c.id)
+        if not o or o.override_reason not in OVERRIDE_REASONS:
+            errors.append(f"{farm.name}: an override reason ({', '.join(OVERRIDE_REASONS)}) is "
+                          f"required for this over-capacity line.")
+        elif not o.override_note.strip():
+            errors.append(f"{farm.name}: an override note is required for this over-capacity line.")
+    if errors:
+        raise HTTPException(422, detail=errors)
+
+    for c in contribs:
+        farm = session.get(Farm, c.farm_id)
+        o = overrides_by_contribution.get(c.id)
+        if o:
+            c.override_reason = o.override_reason
+            c.override_note = o.override_note.strip()
+            c.overridden_by = body.approved_by.strip()
+            c.overridden_at = datetime.now(timezone.utc)
+            session.add(c)
+            session.commit()
+            session.refresh(c)
+        create_bags(session, batch, c, farm)
+    batch.status = "Approved"
+    session.add(batch)
+    session.add(BatchEvent(batch_id=batch.id, event="approved", by=body.approved_by.strip(),
+                            by_role=body.approved_by_role, note=body.note.strip()))
+    session.commit()
+    return batch_out(session, batch)
+
+
+@app.post("/api/batches/{batch_id}/reject")
+def reject_batch(batch_id: int, body: BatchDecisionIn, session: Session = Depends(get_session)):
+    """Issue #15: rejecting a Pending approval batch requires a reason and releases its reserved
+    capacity (it stops counting toward `season_committed_kg` once it's no longer Approved/Pending)."""
+    batch = session.get(Batch, batch_id)
+    if not batch:
+        raise HTTPException(404, "Batch not found")
+    if body.by_role != "admin":
+        raise HTTPException(403, "Only a Brand admin can reject a batch.")
+    if batch.status != "Pending approval":
+        raise HTTPException(400, "Only a batch pending approval can be rejected.")
+    if not body.reason.strip():
+        raise HTTPException(422, detail=["A rejection reason is required."])
+    batch.status = "Rejected"
+    session.add(batch)
+    session.add(BatchEvent(batch_id=batch.id, event="rejected", by=body.by.strip(),
+                            by_role=body.by_role, note=body.reason.strip()))
+    session.commit()
+    return batch_out(session, batch)
+
+
+@app.post("/api/batches/{batch_id}/cancel")
+def cancel_batch(batch_id: int, body: BatchDecisionIn, session: Session = Depends(get_session)):
+    """Issue #15: the operator who submitted a Pending approval batch (or anyone) can cancel it
+    before an admin decides -- this also releases its reserved capacity."""
+    batch = session.get(Batch, batch_id)
+    if not batch:
+        raise HTTPException(404, "Batch not found")
+    if batch.status != "Pending approval":
+        raise HTTPException(400, "Only a batch pending approval can be cancelled.")
+    batch.status = "Cancelled"
+    session.add(batch)
+    session.add(BatchEvent(batch_id=batch.id, event="cancelled", by=body.by.strip(),
+                            by_role=body.by_role, note=body.reason.strip()))
     session.commit()
     return batch_out(session, batch)
 
@@ -763,6 +906,8 @@ def batch_report(batch_id: int, session: Session = Depends(get_session)):
     batch = session.get(Batch, batch_id)
     if not batch:
         raise HTTPException(404, "Batch not found")
+    if batch.status != "Approved":
+        raise HTTPException(400, "This batch is pending approval -- exports are unavailable until it's approved.")
     data = batch_out(session, batch, public=True)
     pdf = build_batch_pdf(batch, data)
     return Response(pdf, media_type="application/pdf", headers={
@@ -808,6 +953,8 @@ def batch_geolocation(batch_id: int, session: Session = Depends(get_session)):
     batch = session.get(Batch, batch_id)
     if not batch:
         raise HTTPException(404, "Batch not found")
+    if batch.status != "Approved":
+        raise HTTPException(400, "This batch is pending approval -- exports are unavailable until it's approved.")
     contribs = session.exec(select(BatchContribution).where(BatchContribution.batch_id == batch_id)).all()
     features = []
     for c in contribs:
@@ -824,6 +971,8 @@ def batch_bag_labels(batch_id: int, session: Session = Depends(get_session)):
     batch = session.get(Batch, batch_id)
     if not batch:
         raise HTTPException(404, "Batch not found")
+    if batch.status != "Approved":
+        raise HTTPException(400, "This batch is pending approval -- exports are unavailable until it's approved.")
     bags = session.exec(select(Bag).where(Bag.batch_id == batch_id).order_by(Bag.bag_id)).all()
     if not bags:
         raise HTTPException(400, "This batch has no bags yet.")

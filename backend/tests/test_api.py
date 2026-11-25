@@ -58,6 +58,11 @@ def create_verified_farm(client, mock_screen, farm_payload=None, **screen_overri
     return verified
 
 
+def session_bags_for_batch(batch_id: int) -> list:
+    with Session(engine) as s:
+        return s.exec(select(Bag).where(Bag.batch_id == batch_id)).all()
+
+
 # ---------------------------------------------------------------- farms
 
 def test_create_farm_stores_gps_walk_capture_method_and_accuracy(client):
@@ -260,43 +265,146 @@ def test_capacity_maths_for_polygon_and_point_farms(client, mock_screen):
     assert farms[point_farm["id"]]["remaining_capacity_kg"] == point_expected
 
 
-def test_batch_exceeding_capacity_is_blocked_without_override(client, mock_screen):
+def test_batch_exceeding_capacity_is_blocked_without_justification(client, mock_screen):
     verified = create_verified_farm(client, mock_screen)
     r = client.post("/api/batches", json={
         "contributions": [{"farm_id": verified["id"], "bags": 1000}],  # 64,000 kg -- always over capacity
     })
     assert r.status_code == 422
-    assert any("override" in d.lower() for d in r.json()["detail"])
+    assert any("justification" in d.lower() for d in r.json()["detail"])
 
 
-def test_admin_override_accepted_and_recorded(client, mock_screen):
+# ---------------------------------------------------------------- mass-balance approval workflow (issue #15)
+
+def test_submit_over_capacity_batch_is_pending_and_reserves_capacity(client, mock_screen):
     verified = create_verified_farm(client, mock_screen)
     r = client.post("/api/batches", json={
-        "contributions": [{
-            "farm_id": verified["id"], "bags": 1000,
-            "override_reason": "Second harvest", "override_note": "Confirmed via field visit.",
-            "overridden_by": "Nadia Owusu", "overridden_by_role": "admin",
-        }],
+        "contributions": [{"farm_id": verified["id"], "bags": 1000}],
+        "justification_note": "Second flowering this season, confirmed by field visit.",
+        "created_by": "Kofi Mensah", "created_by_role": "warehouse",
     })
     assert r.status_code == 201
-    override = r.json()["contributions"][0]["override"]
+    batch = r.json()
+    assert batch["status"] == "Pending approval"
+    assert batch["contributions"][0]["override"] is None  # no override decision yet
+    events = batch["events"]
+    assert len(events) == 1 and events[0]["event"] == "submitted"
+
+    # its kg are reserved: a second batch request on the same farm can't double-book that capacity
+    farms = {f["id"]: f for f in client.get("/api/farms", params={"season": "2026/27"}).json()}
+    assert farms[verified["id"]]["remaining_capacity_kg"] < 0
+
+
+def test_no_exports_while_batch_is_pending(client, mock_screen):
+    verified = create_verified_farm(client, mock_screen)
+    batch = client.post("/api/batches", json={
+        "contributions": [{"farm_id": verified["id"], "bags": 1000}],
+        "justification_note": "Needs admin review.",
+    }).json()
+
+    assert client.get(f"/api/batches/{batch['id']}/report.pdf").status_code == 400
+    assert client.get(f"/api/batches/{batch['id']}/geolocation.geojson").status_code == 400
+    assert client.get(f"/api/batches/{batch['id']}/bag_labels.pdf").status_code == 400
+
+
+def test_approve_sets_overrides_and_generates_bags(client, mock_screen):
+    verified = create_verified_farm(client, mock_screen)
+    batch = client.post("/api/batches", json={
+        "contributions": [{"farm_id": verified["id"], "bags": 1000}],
+        "justification_note": "Second flowering this season, confirmed by field visit.",
+    }).json()
+    contribution_id = batch["contributions"][0]["id"]
+
+    r = client.post(f"/api/batches/{batch['id']}/approve", json={
+        "approved_by": "Nadia Owusu", "approved_by_role": "admin", "note": "Confirmed via field visit.",
+        "overrides": [{"contribution_id": contribution_id, "override_reason": "Second harvest",
+                       "override_note": "Confirmed via field visit."}],
+    })
+    assert r.status_code == 200
+    approved = r.json()
+    assert approved["status"] == "Approved"
+    override = approved["contributions"][0]["override"]
     assert override["reason"] == "Second harvest"
     assert override["by"] == "Nadia Owusu"
-    assert override["note"] == "Confirmed via field visit."
     assert override["at"]
+    assert [e["event"] for e in approved["events"]] == ["submitted", "approved"]
+
+    bags = session_bags_for_batch(batch["id"])
+    assert len(bags) == 1000
+    # exports now work
+    assert client.get(f"/api/batches/{batch['id']}/report.pdf").status_code == 200
 
 
-def test_non_admin_override_is_rejected(client, mock_screen):
+def test_approve_without_override_reason_is_rejected(client, mock_screen):
     verified = create_verified_farm(client, mock_screen)
-    r = client.post("/api/batches", json={
-        "contributions": [{
-            "farm_id": verified["id"], "bags": 1000,
-            "override_reason": "Second harvest", "override_note": "Confirmed via field visit.",
-            "overridden_by": "Kofi Mensah", "overridden_by_role": "warehouse",
-        }],
+    batch = client.post("/api/batches", json={
+        "contributions": [{"farm_id": verified["id"], "bags": 1000}],
+        "justification_note": "Needs admin review.",
+    }).json()
+    r = client.post(f"/api/batches/{batch['id']}/approve", json={
+        "approved_by": "Nadia Owusu", "approved_by_role": "admin",
     })
     assert r.status_code == 422
-    assert any("admin" in d.lower() for d in r.json()["detail"])
+    assert any("override reason" in d.lower() for d in r.json()["detail"])
+
+
+def test_non_admin_cannot_approve_or_reject(client, mock_screen):
+    verified = create_verified_farm(client, mock_screen)
+    batch = client.post("/api/batches", json={
+        "contributions": [{"farm_id": verified["id"], "bags": 1000}],
+        "justification_note": "Needs admin review.",
+    }).json()
+
+    r = client.post(f"/api/batches/{batch['id']}/approve", json={
+        "approved_by": "Kofi Mensah", "approved_by_role": "warehouse",
+        "overrides": [{"contribution_id": batch["contributions"][0]["id"],
+                       "override_reason": "Second harvest", "override_note": "n/a"}],
+    })
+    assert r.status_code == 403
+
+    r = client.post(f"/api/batches/{batch['id']}/reject", json={
+        "by": "Kofi Mensah", "by_role": "warehouse", "reason": "n/a",
+    })
+    assert r.status_code == 403
+
+
+def test_reject_releases_reserved_capacity(client, mock_screen):
+    verified = create_verified_farm(client, mock_screen)
+    batch = client.post("/api/batches", json={
+        "contributions": [{"farm_id": verified["id"], "bags": 1000}],
+        "justification_note": "Needs admin review.",
+    }).json()
+
+    r = client.post(f"/api/batches/{batch['id']}/reject", json={
+        "by": "Nadia Owusu", "by_role": "admin", "reason": "Not enough supporting evidence.",
+    })
+    assert r.status_code == 200
+    rejected = r.json()
+    assert rejected["status"] == "Rejected"
+    assert [e["event"] for e in rejected["events"]] == ["submitted", "rejected"]
+    assert session_bags_for_batch(batch["id"]) == []
+
+    farms = {f["id"]: f for f in client.get("/api/farms", params={"season": "2026/27"}).json()}
+    capacity = farms[verified["id"]]["capacity_kg"]
+    assert farms[verified["id"]]["remaining_capacity_kg"] == capacity  # fully released
+
+
+def test_cancel_pending_batch_releases_capacity(client, mock_screen):
+    verified = create_verified_farm(client, mock_screen)
+    batch = client.post("/api/batches", json={
+        "contributions": [{"farm_id": verified["id"], "bags": 1000}],
+        "justification_note": "Needs admin review.",
+    }).json()
+
+    r = client.post(f"/api/batches/{batch['id']}/cancel", json={"by": "Kofi Mensah", "by_role": "warehouse"})
+    assert r.status_code == 200
+    cancelled = r.json()
+    assert cancelled["status"] == "Cancelled"
+    assert [e["event"] for e in cancelled["events"]] == ["submitted", "cancelled"]
+
+    farms = {f["id"]: f for f in client.get("/api/farms", params={"season": "2026/27"}).json()}
+    capacity = farms[verified["id"]]["capacity_kg"]
+    assert farms[verified["id"]]["remaining_capacity_kg"] == capacity
 
 
 def test_capacity_is_per_season(client, mock_screen):
