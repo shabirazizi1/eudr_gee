@@ -23,7 +23,7 @@ async function request(path, options = {}) {
 export const api = {
   health: () => request('/health'),
   summary: () => request('/summary'),
-  farms: () => request('/farms'),
+  farms: (season) => request(season ? `/farms?season=${encodeURIComponent(season)}` : '/farms'),
   farm: (id) => request(`/farms/${id}`),
   createFarm: (body) => request('/farms', { method: 'POST', body: JSON.stringify(body) }),
   verify: (id) => request(`/farms/${id}/verify`, { method: 'POST' }),

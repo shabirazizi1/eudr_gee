@@ -34,7 +34,7 @@ export default function BatchDetail() {
         <div>
           <h1>{batch.code}</h1>
           <p className="muted">
-            Buyer: {batch.buyer} · Created {new Date(batch.created_at).toLocaleString()}
+            Buyer: {batch.buyer} · Season {batch.season} · Created {new Date(batch.created_at).toLocaleString()}
             {batch.created_by ? ` by ${batch.created_by}` : ''}
           </p>
         </div>
@@ -80,6 +80,12 @@ export default function BatchDetail() {
                       <small className="muted">{c.farm.code} · {c.farm.farmer_name}</small>
                       {c.farm.status === 'Verified (manual review)' && (
                         <div><span className="pill ok small">✓ Manually cleared</span></div>
+                      )}
+                      {c.override && (
+                        <div className="small" style={{ color: '#b8860b' }}>
+                          ⚠ Mass-balance override: {c.override.reason} — {c.override.by || 'n/a'}
+                          {c.override.at ? ` (${new Date(c.override.at).toLocaleDateString()})` : ''}
+                        </div>
                       )}
                     </>
                   ) : <span className="muted">Farm removed</span>}

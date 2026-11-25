@@ -423,6 +423,14 @@ def _contrib_notes(f: dict) -> str:
     return f"Cleared: {lr['reason']} — {lr.get('reviewer_name') or 'reviewer n/a'} ({lr['created_at'][:10]})"
 
 
+def _override_note(c: dict) -> str:
+    """Issue #6: 'Mass-balance override: reason, by, date' wherever a contribution is shown."""
+    o = c.get("override")
+    if not o:
+        return ""
+    return f"Mass-balance override: {o['reason']} — {o.get('by') or 'n/a'} ({(o.get('at') or '')[:10]})"
+
+
 def build_batch_pdf(batch, data: dict) -> bytes:
     """`data` is the batch_out() dict: contributions carry the farm_out() payload for each farm
     (including `reviews`/`latest_review`), so the per-farm appendix can reuse the single-farm
@@ -460,6 +468,7 @@ def build_batch_pdf(batch, data: dict) -> bytes:
     # ---- Compliance statement -------------------------------------------------
     passed = sum(1 for f in farms if f.get("status") in ("Verified", "Verified (manual review)"))
     manually_cleared = sum(1 for f in farms if f.get("status") == "Verified (manual review)")
+    overridden = sum(1 for c in contributions if c.get("override"))
     statement = (
         f"All {passed} of {len(farms)} contributing farms passed satellite screening for "
         f"tree-cover loss after 31 Dec {config.CUTOFF_YEAR} as of {today_label}."
@@ -468,6 +477,9 @@ def build_batch_pdf(batch, data: dict) -> bytes:
         verb = "was" if manually_cleared == 1 else "were"
         plural = "" if manually_cleared == 1 else "s"
         statement += f" {manually_cleared} farm{plural} {verb} cleared by manual review."
+    if overridden:
+        plural = "" if overridden == 1 else "s"
+        statement += f" {overridden} contribution{plural} required an admin-approved mass-balance override."
     els.append(Paragraph(f'<font color="#2f5d34"><b>{statement}</b></font>', h3))
     els.append(Spacer(1, 10))
 
@@ -516,11 +528,12 @@ def build_batch_pdf(batch, data: dict) -> bytes:
         run = f"{v['run_id']} · {v['created_at'][:10]}" if v else "–"
         if f.get("boundary_version"):
             run += f" · Boundary v{f['boundary_version']}"
+        notes = " / ".join(n for n in (_contrib_notes(f), _override_note(c)) if n)
         rows.append([
             Paragraph(f["code"], cell), Paragraph(f["farmer_name"], cell),
             Paragraph(f"{f['area_ha']:.2f} ha", cell), Paragraph(risk, cell),
             Paragraph(capture, cell), Paragraph(f["status"], cell),
-            Paragraph(run, cell), Paragraph(_contrib_notes(f), cell),
+            Paragraph(run, cell), Paragraph(notes, cell),
         ])
     ft = Table(rows, colWidths=[18 * mm, 20 * mm, 12 * mm, 16 * mm, 20 * mm, 20 * mm, 26 * mm, 38 * mm])
     ft.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, 0), GREEN),
@@ -563,6 +576,8 @@ def build_batch_pdf(batch, data: dict) -> bytes:
                 f" · Status: {f['status']}", h3))
         else:
             els.append(Paragraph(f"Status: {f['status']}", h3))
+        if c.get("override"):
+            els.append(Paragraph(f'<font color="#b8860b">{_override_note(c)}</font>', small))
         els.append(Spacer(1, 5))
 
         appendix_facts = _facts_table(f, res, col_widths=(40 * mm, 48 * mm))

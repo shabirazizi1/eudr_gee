@@ -77,6 +77,7 @@ class Batch(SQLModel, table=True):
     buyer: str = "Chocolaterie Vandermeer, Ghent, Belgium"
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     created_by: str = ""
+    season: str = "2026/27"  # mass-balance capacity (issue #6) is tracked per farm per season
 
 
 class BatchContribution(SQLModel, table=True):
@@ -88,6 +89,12 @@ class BatchContribution(SQLModel, table=True):
     # The boundary version the farm was on when it joined this batch (issue #4): a later remap
     # must not change what an already-shipped batch shows.
     boundary_version_id: Optional[int] = Field(default=None, foreign_key="boundaryversion.id")
+    # Mass-balance override (issue #6): set only when this contribution exceeded the farm's
+    # remaining season capacity and a Brand admin approved it anyway.
+    override_reason: Optional[str] = None  # Second harvest / Yield above average / Data correction / Other
+    override_note: str = ""
+    overridden_by: str = ""
+    overridden_at: Optional[datetime] = None
 
 
 class Bag(SQLModel, table=True):
