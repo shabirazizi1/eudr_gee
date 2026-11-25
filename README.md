@@ -112,6 +112,9 @@ Open **http://localhost:8080**. The SQLite DB and `uploads/` live in a named Doc
 (`db_data`) so data survives `docker compose down` / restarts, and demo farms are seeded
 automatically the first time the database is empty.
 
+First start seeds demo data with Earth Engine (~2 min). The app is reachable right away — the
+farm list is just empty until that background seed run finishes.
+
 - **With Earth Engine credentials**: if you've already run `earthengine authenticate` on this Mac
   (§2), `~/.config/earthengine` is mounted read-only into the backend container and satellite
   checks use real Earth Engine (`source: "gee"` in the verify result).
