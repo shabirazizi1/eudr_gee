@@ -13,3 +13,5 @@ HANSEN_ASSET = os.getenv("HANSEN_ASSET", "UMD/hansen/global_forest_change_2024_v
 CUTOFF_YEAR = int(os.getenv("CUTOFF_YEAR", "2020"))
 DB_URL = os.getenv("DB_URL", f"sqlite:///{BASE_DIR / 'eudr.db'}")
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")  # for QR codes / links in PDFs
+UPLOADS_DIR = Path(os.getenv("UPLOADS_DIR", str(BASE_DIR / "uploads")))
+CONSENT_PHOTOS_DIR = UPLOADS_DIR / "consent"  # gitignored; served only via /api/farms/{id}/consent_photo

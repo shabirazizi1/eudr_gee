@@ -1,18 +1,24 @@
-"""Shared test fixtures: a throwaway temp-file SQLite database (never eudr.db) and a mockable
-Earth Engine `screen()` so tests never touch the real database or call out to Earth Engine.
+"""Shared test fixtures: a throwaway temp-file SQLite database (never eudr.db), a throwaway
+uploads directory (never backend/uploads/), and a mockable Earth Engine `screen()` so tests
+never touch real data or call out to Earth Engine.
 
-The DB_URL env var must be set before `app.config`/`app.db` are imported anywhere, since
-`app.db` builds its engine from `config.DB_URL` at import time -- hence this happens at module
-import time, above every other import in this file.
+The DB_URL/UPLOADS_DIR env vars must be set before `app.config`/`app.db` are imported anywhere,
+since `app.db` builds its engine from `config.DB_URL` at import time -- hence this happens at
+module import time, above every other import in this file.
 """
 import atexit
 import os
+import shutil
 import tempfile
 
 _tmp_db = tempfile.NamedTemporaryFile(prefix="eudr_test_", suffix=".db", delete=False)
 _tmp_db.close()
 os.environ["DB_URL"] = f"sqlite:///{_tmp_db.name}"
 atexit.register(lambda: os.path.exists(_tmp_db.name) and os.remove(_tmp_db.name))
+
+_tmp_uploads = tempfile.mkdtemp(prefix="eudr_test_uploads_")
+os.environ["UPLOADS_DIR"] = _tmp_uploads
+atexit.register(lambda: shutil.rmtree(_tmp_uploads, ignore_errors=True))
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402

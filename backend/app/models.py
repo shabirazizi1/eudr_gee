@@ -27,6 +27,12 @@ class Farm(SQLModel, table=True):
     risk_level: Optional[str] = None  # Low / Medium / High
     status: str = "Not screened"  # Not screened / Verified / Under review
     last_screened: Optional[datetime] = None
+    # Farmer consent (issue #7): a farm cannot be created without it. "attestation" is the
+    # checkbox + agent name (captured_by) + date; a signed-form photo is optional on top.
+    consent_method: str = "attestation"  # "attestation" or "photo"
+    consent_given: bool = False
+    consent_date: Optional[str] = None
+    consent_photo_path: Optional[str] = None  # filename under uploads/consent/; never returned by farm_out()
 
 
 class Verification(SQLModel, table=True):

@@ -2,6 +2,7 @@
 __pycache__/
 *.db
 backend/.env
+backend/uploads/
 frontend/node_modules/
 frontend/dist/
 .DS_Store

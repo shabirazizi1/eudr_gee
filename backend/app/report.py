@@ -281,9 +281,11 @@ def build_pdf(farm, verification, reviews=None) -> bytes:
     caption = small.clone("caption", fontSize=7, leading=9)
     els = []
 
+    # Buyer-facing (same as the batch report): farmer initials, no village (data minimization).
+    farmer_initials = "".join(w[0] for w in farm.farmer_name.split() if w).upper() or "–"
     els.append(Paragraph("Deforestation-Free Evidence Report", h1))
     els.append(Paragraph(
-        f"{farm.name} · {farm.code} · {farm.farmer_name} · {_place(farm.village, farm.region)}", body))
+        f"{farm.name} · {farm.code} · {farmer_initials} · {_place('', farm.region)}", body))
     els.append(Paragraph(
         f"Run {verification.run_id} · {verification.created_at:%d %b %Y %H:%M} UTC · "
         f"Data source: {verification.source.upper()}", small))
