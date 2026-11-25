@@ -69,6 +69,13 @@ export default function Dashboard({ listOnly = false }) {
                 · {summary.reviewed} reviewed · {summary.excluded} excluded
               </small></div>
             <div className="card pad"><small className="muted">Mass-balance overrides</small><b>{summary.mass_balance_overrides}</b></div>
+            <div className="card pad">
+              <small className="muted">Pending approvals</small>
+              <b>{summary.pending_approvals}</b>
+              {summary.pending_approvals > 0 && (
+                <div><Link className="link-btn small" to="/batches">Review queue →</Link></div>
+              )}
+            </div>
           </div>
           <div className="card pad">
             <div className="card-head tight"><b>Satellite risk distribution</b><small className="muted">{summary.screened} screened farms</small></div>

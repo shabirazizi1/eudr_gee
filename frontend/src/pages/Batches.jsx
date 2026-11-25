@@ -8,8 +8,8 @@ import RiskBadge from '../components/RiskBadge.jsx'
 const DEFAULT_BUYER = 'Chocolaterie Vandermeer, Ghent, Belgium'
 const DEFAULT_SEASON = '2026/27'
 const KG_PER_BAG = 64
-// Mass-balance override reasons (issue #6) -- must match backend OVERRIDE_REASONS.
-const OVERRIDE_REASONS = ['Second harvest', 'Yield above average', 'Data correction', 'Other']
+const STATUS_FILTERS = ['All', 'Approved', 'Pending approval', 'Rejected', 'Cancelled']
+const STATUS_PILL = { Approved: 'ok', 'Pending approval': 'warn', Rejected: 'bad', Cancelled: '' }
 
 function disabledReason(farm) {
   if (farm.status === 'Verified' || farm.status === 'Verified (manual review)') return null
@@ -20,14 +20,14 @@ function disabledReason(farm) {
 
 export default function Batches() {
   const nav = useNavigate()
-  const isAdmin = getUser()?.role === 'admin'
   const [batches, setBatches] = useState([])
   const [farms, setFarms] = useState([])
   const [creating, setCreating] = useState(false)
   const [buyer, setBuyer] = useState(DEFAULT_BUYER)
   const [season, setSeason] = useState(DEFAULT_SEASON)
   const [bags, setBags] = useState({}) // farmId -> bag count string
-  const [overrides, setOverrides] = useState({}) // farmId -> { reason, note }
+  const [justification, setJustification] = useState('')
+  const [statusFilter, setStatusFilter] = useState('All')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
 
@@ -44,7 +44,6 @@ export default function Batches() {
     })
   }
   const setBagCount = (id, v) => setBags((b) => ({ ...b, [id]: v }))
-  const setOverride = (id, patch) => setOverrides((o) => ({ ...o, [id]: { ...o[id], ...patch } }))
 
   const selected = Object.entries(bags).filter(([, v]) => Number(v) > 0)
   const totalBags = selected.reduce((s, [, v]) => s + Number(v), 0)
@@ -56,11 +55,9 @@ export default function Batches() {
     const remaining = remainingFor(farmId)
     return remaining != null && kgFor(farmId) > remaining
   }
-  const overrideReady = (farmId) => {
-    const o = overrides[farmId]
-    return Boolean(o?.reason && o?.note?.trim())
-  }
-  const blockedBySelf = selected.some(([id]) => overCapacity(id) && (!isAdmin || !overrideReady(id)))
+  const anyOverCapacity = selected.some(([id]) => overCapacity(id))
+  const blocked = anyOverCapacity && !justification.trim()
+  const shownBatches = statusFilter === 'All' ? batches : batches.filter((b) => b.status === statusFilter)
 
   const createBatch = async () => {
     setError('')
@@ -71,17 +68,11 @@ export default function Batches() {
         buyer,
         season,
         created_by: getUser()?.name || '',
-        contributions: selected.map(([farm_id, v]) => {
-          const contrib = { farm_id: Number(farm_id), bags: Number(v), kg_per_bag: KG_PER_BAG }
-          if (overCapacity(farm_id)) {
-            const o = overrides[farm_id] || {}
-            Object.assign(contrib, {
-              override_reason: o.reason, override_note: o.note,
-              overridden_by: getUser()?.name || '', overridden_by_role: getUser()?.role,
-            })
-          }
-          return contrib
-        }),
+        created_by_role: getUser()?.role,
+        justification_note: anyOverCapacity ? justification.trim() : undefined,
+        contributions: selected.map(([farm_id, v]) => (
+          { farm_id: Number(farm_id), bags: Number(v), kg_per_bag: KG_PER_BAG }
+        )),
       }
       const batch = await api.createBatch(body)
       nav(`/batches/${batch.id}`)
@@ -151,26 +142,10 @@ export default function Batches() {
                           <input type="number" min="1" style={{ width: 70 }} value={bags[f.id]}
                             onChange={(e) => setBagCount(f.id, e.target.value)} />
                           {over && (
-                            <div className="stack" style={{ gap: 6, marginTop: 8, maxWidth: 320 }}>
-                              <p className="small bad-text" style={{ margin: 0 }}>
-                                ⚠ {kgFor(f.id).toLocaleString()} kg exceeds the {Math.max(f.remaining_capacity_kg, 0).toLocaleString()} kg
-                                left this season -- a mass-balance override is required.
-                              </p>
-                              {isAdmin ? (
-                                <>
-                                  <select value={overrides[f.id]?.reason || ''}
-                                    onChange={(e) => setOverride(f.id, { reason: e.target.value })}>
-                                    <option value="">Override reason…</option>
-                                    {OVERRIDE_REASONS.map((r) => <option key={r} value={r}>{r}</option>)}
-                                  </select>
-                                  <textarea rows={2} placeholder="Note (required)"
-                                    value={overrides[f.id]?.note || ''}
-                                    onChange={(e) => setOverride(f.id, { note: e.target.value })} />
-                                </>
-                              ) : (
-                                <p className="small notice" style={{ margin: 0 }}>Ask an admin to approve.</p>
-                              )}
-                            </div>
+                            <p className="small bad-text" style={{ margin: '8px 0 0', maxWidth: 260 }}>
+                              ⚠ {kgFor(f.id).toLocaleString()} kg exceeds the {Math.max(f.remaining_capacity_kg, 0).toLocaleString()} kg
+                              left this season.
+                            </p>
                           )}
                         </>
                       )}
@@ -181,10 +156,24 @@ export default function Batches() {
               {!farms.length && <tr><td colSpan="6" className="muted center">No farms registered yet.</td></tr>}
             </tbody>
           </table>
+
+          {anyOverCapacity && (
+            <div className="notice" style={{ marginTop: 12 }}>
+              <p className="small" style={{ margin: '0 0 6px' }}>
+                One or more farms exceed their remaining season capacity. This batch will be
+                <b> submitted for admin approval</b> instead of created immediately -- add a
+                justification note below.
+              </p>
+              <textarea rows={2} placeholder="Justification note (required)"
+                value={justification} onChange={(e) => setJustification(e.target.value)} />
+            </div>
+          )}
+
           <div className="row between" style={{ marginTop: 12 }}>
             <span className="small muted">{selected.length} farm(s) · {totalBags} bags · {totalBags * KG_PER_BAG} kg</span>
-            <button className="btn primary" disabled={busy || blockedBySelf} onClick={createBatch}>
-              {busy ? 'Creating…' : 'Create batch →'}
+            <button className="btn primary" disabled={busy || blocked} onClick={createBatch}>
+              {busy ? (anyOverCapacity ? 'Submitting…' : 'Creating…')
+                : anyOverCapacity ? 'Submit for admin approval →' : 'Create batch →'}
             </button>
           </div>
           {error && <p className="small bad-text">{error}</p>}
@@ -192,13 +181,19 @@ export default function Batches() {
       )}
 
       <section className="card">
-        <div className="card-head"><b>Batches <span className="pill">{batches.length}</span></b></div>
+        <div className="card-head">
+          <b>Batches <span className="pill">{shownBatches.length}</span></b>
+          <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+            {STATUS_FILTERS.map((s) => <option key={s}>{s}</option>)}
+          </select>
+        </div>
         <table className="table batch-list-table">
-          <thead><tr><th>Batch</th><th>Buyer</th><th>Season</th><th>Farms</th><th>Bags</th><th>Weight</th><th>Created</th></tr></thead>
+          <thead><tr><th>Batch</th><th>Status</th><th>Buyer</th><th>Season</th><th>Farms</th><th>Bags</th><th>Weight</th><th>Created</th></tr></thead>
           <tbody>
-            {batches.map((b) => (
+            {shownBatches.map((b) => (
               <tr key={b.id}>
                 <td data-label="Batch"><Link to={`/batches/${b.id}`}><b>{b.code}</b></Link></td>
+                <td data-label="Status"><span className={`pill ${STATUS_PILL[b.status] || ''} small`}>{b.status}</span></td>
                 <td data-label="Buyer">{b.buyer}</td>
                 <td data-label="Season">{b.season}</td>
                 <td data-label="Farms">{b.totals.farms}</td>
@@ -207,7 +202,7 @@ export default function Batches() {
                 <td data-label="Created">{new Date(b.created_at).toLocaleDateString()}</td>
               </tr>
             ))}
-            {!batches.length && <tr><td colSpan="7" className="muted center">No batches yet.</td></tr>}
+            {!shownBatches.length && <tr><td colSpan="8" className="muted center">No batches match.</td></tr>}
           </tbody>
         </table>
       </section>

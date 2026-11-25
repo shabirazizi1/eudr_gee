@@ -15,7 +15,7 @@ from sqlmodel import Session, SQLModel, select
 from . import config, geo
 from .db import engine, init_db
 from .main import create_bags, create_boundary_version, latest_boundary_version  # reuse API logic
-from .models import Batch, BatchContribution, BoundaryVersion, Farm
+from .models import Batch, BatchContribution, BatchEvent, BoundaryVersion, Farm
 
 DEMO = [
     # name, farmer, village, centre (lat, lon), radius (m), vertices, capture_method, gps_accuracy_m, flagged_points
@@ -192,6 +192,33 @@ def main():
                         s.commit()
                         print(f"Seeded {batch2.code}: 1 farm, {override_bags} bags, "
                               f"with a mass-balance override on Adom Cocoa Farm.")
+
+                    # One demo mass-balance approval request (issue #15): a buyer top-up on Benso
+                    # that exceeds its remaining season capacity, awaiting a Brand admin's
+                    # decision -- no bags yet, since nothing is generated until it's approved.
+                    benso = next((f for f in low_farms if f.name == "Benso Cocoa Farm"), None)
+                    if benso and not s.exec(select(Batch).where(Batch.code == "BATCH-2026-003")).first():
+                        batch3 = Batch(code="BATCH-2026-003", buyer="Nouvelle Chocolaterie, Paris, France",
+                                      created_by="Kofi Mensah", season=config.DEFAULT_SEASON,
+                                      status="Pending approval",
+                                      submission_note="Buyer increased the order after Benso's second "
+                                                       "flowering; the extra bags exceed its remaining "
+                                                       "season capacity.")
+                        s.add(batch3)
+                        s.commit()
+                        s.refresh(batch3)
+                        bv3 = latest_boundary_version(s, benso.id)
+                        pending_bags = 30  # 1,920 kg -- exceeds Benso's remaining season capacity
+                        contribution3 = BatchContribution(
+                            batch_id=batch3.id, farm_id=benso.id, bags=pending_bags, kg_per_bag=64.0,
+                            boundary_version_id=bv3.id if bv3 else None,
+                        )
+                        s.add(contribution3)
+                        s.add(BatchEvent(batch_id=batch3.id, event="submitted", by="Kofi Mensah",
+                                         by_role="warehouse", note=batch3.submission_note))
+                        s.commit()
+                        print(f"Seeded {batch3.code}: Pending approval, {pending_bags} bags "
+                              f"requested on Benso Cocoa Farm.")
 
 
 if __name__ == "__main__":

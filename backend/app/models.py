@@ -78,6 +78,12 @@ class Batch(SQLModel, table=True):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     created_by: str = ""
     season: str = "2026/27"  # mass-balance capacity (issue #6) is tracked per farm per season
+    # Mass-balance approval workflow (issue #15): a batch within every farm's remaining season
+    # capacity is created "Approved" directly, as before. One that exceeds capacity is created
+    # "Pending approval" instead -- its kg still count against the season's committed capacity
+    # (so the same kilos can't be reserved twice) until a Brand admin approves or rejects it.
+    status: str = "Approved"  # Approved / Pending approval / Rejected / Cancelled
+    submission_note: str = ""  # operator's justification note when submitted for approval
 
 
 class BatchContribution(SQLModel, table=True):
@@ -108,6 +114,18 @@ class Bag(SQLModel, table=True):
     batch_id: int = Field(foreign_key="batch.id", index=True)
     contribution_id: Optional[int] = Field(default=None, foreign_key="batchcontribution.id", index=True)
     weight_kg: float
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class BatchEvent(SQLModel, table=True):
+    """Audit trail for the mass-balance approval workflow (issue #15): one row per submitted /
+    approved / rejected / cancelled decision on a batch. Never edited or deleted."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    batch_id: int = Field(foreign_key="batch.id", index=True)
+    event: str  # "submitted" / "approved" / "rejected" / "cancelled"
+    by: str = ""
+    by_role: Optional[str] = None
+    note: str = ""
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 

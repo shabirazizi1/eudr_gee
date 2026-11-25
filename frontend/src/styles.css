@@ -42,6 +42,7 @@ textarea { resize: vertical; }
 .pill.ok { background: var(--green-soft); color: var(--green); }
 .pill.warn { background: #fff0cc; color: #8a6200; }
 .pill.light { background: rgba(255,255,255,0.9); color: var(--ink); }
+.pill.bad { background: #f6dcd8; color: var(--high); }
 .badge { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; }
 .badge.low { background: #e3f0e0; color: var(--low); }
 .badge.medium { background: #f8eccb; color: #8a6a10; }
