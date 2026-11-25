@@ -1,6 +1,7 @@
 import base64
 import io
 
+import pymupdf
 from PIL import Image
 from sqlmodel import Session, select
 
@@ -119,6 +120,20 @@ def test_verify_then_report_is_200(client, mock_screen):
     assert r.status_code == 200
     assert r.headers["content-type"] == "application/pdf"
     assert r.content[:4] == b"%PDF"
+
+
+def test_farm_evidence_pdf_has_no_full_farmer_name_or_consent(client, mock_screen):
+    farm = client.post("/api/farms", json=VALID_FARM).json()
+    client.post(f"/api/farms/{farm['id']}/verify")
+    r = client.get(f"/api/farms/{farm['id']}/report.pdf")
+    assert r.status_code == 200
+
+    doc = pymupdf.open(stream=r.content, filetype="pdf")
+    text = "\n".join(page.get_text() for page in doc)
+    assert VALID_FARM["farmer_name"] not in text
+    assert VALID_FARM["village"] not in text
+    assert "consent" not in text.lower()
+    assert "AM" in text  # farmer initials still shown
 
 
 # ---------------------------------------------------------------- batches & review

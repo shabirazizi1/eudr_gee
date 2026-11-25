@@ -10,3 +10,4 @@ requests
 qrcode[pil]
 Pillow
 pytest
+pymupdf  # test-only: extracts PDF text to verify buyer-facing reports stay minimized
