@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Navigate, NavLink, Route, Routes, useNavigate } from 'react-router-dom'
-import { api, flushOutbox, outboxCount } from './api.js'
+import { api, discardFailed, failedOutbox, flushOutbox, outboxCount } from './api.js'
 import Login from './pages/Login.jsx'
 import Capture from './pages/Capture.jsx'
 import Result from './pages/Result.jsx'
@@ -33,6 +33,7 @@ function Shell({ user, children }) {
   const nav = useNavigate()
   const [mode, setMode] = useState(null)
   const [pending, setPending] = useState(outboxCount())
+  const [failed, setFailed] = useState(failedOutbox())
   const [pendingApprovals, setPendingApprovals] = useState(0)
   const [online, setOnline] = useState(navigator.onLine)
   const [accountOpen, setAccountOpen] = useState(false)
@@ -43,6 +44,7 @@ function Shell({ user, children }) {
       setOnline(navigator.onLine)
       await flushOutbox()
       setPending(outboxCount())
+      setFailed(failedOutbox())
     }
     const loadApprovals = () => api.summary().then((s) => setPendingApprovals(s.pending_approvals)).catch(() => {})
     sync()
@@ -101,7 +103,20 @@ function Shell({ user, children }) {
             </div>
           </div>
         </header>
-        <main className="content">{children}</main>
+        <main className="content">
+          {failed.length > 0 && (
+            <div className="notice" role="alert" style={{ marginBottom: 12 }}>
+              <b>{failed.length} offline farm{failed.length > 1 ? 's' : ''} couldn't be saved:</b>
+              {failed.map((f) => (
+                <div key={f.queuedAt} className="row between" style={{ marginTop: 4 }}>
+                  <span>{f.name || 'Unnamed farm'}: {f.error}</span>
+                  <button className="btn" onClick={() => { discardFailed(f.queuedAt); setFailed(failedOutbox()) }}>Discard</button>
+                </div>
+              ))}
+            </div>
+          )}
+          {children}
+        </main>
       </div>
 
       <nav className="tabbar">
