@@ -322,6 +322,7 @@ export default function Capture() {
     const body = {
       geometry,
       captured_by: getUser()?.name || '',
+      captured_by_role: getUser()?.role,
       capture_method: captureMethod,
       gps_accuracy_m: avgAccuracy !== null ? Math.round(avgAccuracy * 10) / 10 : null,
       flagged_points: flaggedCount,

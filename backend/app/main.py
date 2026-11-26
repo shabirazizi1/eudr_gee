@@ -93,6 +93,7 @@ class ReviewCreate(BaseModel):
     reason: str
     note: str = ""
     reviewer_name: str = ""
+    reviewer_role: Optional[str] = None
 
 
 class RemapCreate(BaseModel):
@@ -103,7 +104,14 @@ class RemapCreate(BaseModel):
     gps_accuracy_m: Optional[float] = None
     flagged_points: int = 0
     captured_by: str = ""
+    captured_by_role: Optional[str] = None
     declared_area_ha: Optional[float] = None
+
+
+def require_role(role: Optional[str], allowed: str, message: str) -> None:
+    # MVP: role comes from the client; real authentication is on the roadmap.
+    if role != allowed:
+        raise HTTPException(403, message)
 
 
 def needs_field_audit(farm: Farm) -> bool:
@@ -568,6 +576,7 @@ def remap_farm(farm_id: int, body: RemapCreate, session: Session = Depends(get_s
     farm = session.get(Farm, farm_id)
     if not farm:
         raise HTTPException(404, "Farm not found")
+    require_role(body.captured_by_role, "agent", "Only a field agent can remap a farm boundary.")
     errors = validate_geometry(body.geometry, body.declared_area_ha)
     if errors:
         raise HTTPException(422, detail=errors)
@@ -640,12 +649,11 @@ def verify_farm(farm_id: int, session: Session = Depends(get_session)):
 
 @app.post("/api/farms/{farm_id}/review")
 def review_farm(farm_id: int, body: ReviewCreate, session: Session = Depends(get_session)):
-    """HLR-05 / DEL-02: Brand admin dispute decision. Only the UI restricts this to the admin role
-    (no real auth in this MVP, same as the rest of the app); the backend validates the data itself.
-    """
+    """HLR-05 / DEL-02: Brand admin dispute decision (clear / confirm)."""
     farm = session.get(Farm, farm_id)
     if not farm:
         raise HTTPException(404, "Farm not found")
+    require_role(body.reviewer_role, "admin", "Only a Brand admin can review a farm.")
     if farm.status != "Under review":
         raise HTTPException(400, "Only farms currently Under review can be reviewed.")
     if body.decision not in ("clear", "confirm"):
@@ -666,10 +674,11 @@ def review_farm(farm_id: int, body: ReviewCreate, session: Session = Depends(get
 
 
 @app.get("/api/farms/{farm_id}/consent_photo")
-def consent_photo(farm_id: int, session: Session = Depends(get_session)):
-    """Admin-only by convention (same no-real-auth model as /review): the consent photo itself
-    is never embedded in list, public or PDF responses -- only reachable here, one farm at a time.
+def consent_photo(farm_id: int, role: Optional[str] = None, session: Session = Depends(get_session)):
+    """Admin-only (`?role=admin`): the consent photo itself is never embedded in list, public or
+    PDF responses -- only reachable here, one farm at a time.
     """
+    require_role(role, "admin", "Only a Brand admin can view a consent photo.")
     farm = session.get(Farm, farm_id)
     if not farm or not farm.consent_photo_path:
         raise HTTPException(404, "No consent photo on file")
@@ -876,11 +885,12 @@ def reject_batch(batch_id: int, body: BatchDecisionIn, session: Session = Depend
 
 @app.post("/api/batches/{batch_id}/cancel")
 def cancel_batch(batch_id: int, body: BatchDecisionIn, session: Session = Depends(get_session)):
-    """Issue #15: the operator who submitted a Pending approval batch (or anyone) can cancel it
-    before an admin decides -- this also releases its reserved capacity."""
+    """Issue #15: a warehouse operator can cancel a Pending approval batch before an admin
+    decides -- this also releases its reserved capacity."""
     batch = session.get(Batch, batch_id)
     if not batch:
         raise HTTPException(404, "Batch not found")
+    require_role(body.by_role, "warehouse", "Only a warehouse operator can cancel a batch.")
     if batch.status != "Pending approval":
         raise HTTPException(400, "Only a batch pending approval can be cancelled.")
     batch.status = "Cancelled"

@@ -152,11 +152,11 @@ def test_create_farm_with_photo_consent_is_not_exposed_publicly(client):
     listed = client.get("/api/farms").json()
     assert all("consent_photo_path" not in f for f in listed)
 
-    photo = client.get(f"/api/farms/{farm['id']}/consent_photo")
+    photo = client.get(f"/api/farms/{farm['id']}/consent_photo", params={"role": "admin"})
     assert photo.status_code == 200
     assert photo.headers["content-type"] == "image/jpeg"
 
-    missing = client.get("/api/farms/999999/consent_photo")
+    missing = client.get("/api/farms/999999/consent_photo", params={"role": "admin"})
     assert missing.status_code == 404
 
 
@@ -225,7 +225,7 @@ def test_review_clear_allows_batch_join(client, mock_screen):
 
     r = client.post(f"/api/farms/{verified['id']}/review", json={
         "decision": "clear", "reason": "Cloud cover", "note": "Checked manually, no real loss.",
-        "reviewer_name": "Nadia Owusu",
+        "reviewer_name": "Nadia Owusu", "reviewer_role": "admin",
     })
     assert r.status_code == 200
     assert r.json()["status"] == "Verified (manual review)"
@@ -243,7 +243,7 @@ def test_review_confirm_blocks_batch_join(client, mock_screen):
 
     r = client.post(f"/api/farms/{verified['id']}/review", json={
         "decision": "confirm", "reason": "Boundary error", "note": "Confirmed real clearing.",
-        "reviewer_name": "Nadia Owusu",
+        "reviewer_name": "Nadia Owusu", "reviewer_role": "admin",
     })
     assert r.status_code == 200
     assert r.json()["status"] == "Excluded"
@@ -447,7 +447,7 @@ def test_remapped_area_applies_to_new_batches_only(client, mock_screen):
 
     # remap to a much smaller plot, then re-verify to make it batchable again
     small_square = make_polygon(cx=-2.45, cy=5.82, half=0.0002)
-    remapped = client.post(f"/api/farms/{verified['id']}/remap", json={"geometry": small_square}).json()
+    remapped = client.post(f"/api/farms/{verified['id']}/remap", json={"captured_by_role": "agent", "geometry": small_square}).json()
     assert remapped["area_ha"] < verified["area_ha"]
     mock_screen()
     client.post(f"/api/farms/{verified['id']}/verify")
@@ -485,7 +485,7 @@ def test_remap_creates_v2_with_v1_unchanged(client):
     farm = client.post("/api/farms", json=VALID_FARM).json()
     v1_geometry = farm["geometry"]
 
-    r = client.post(f"/api/farms/{farm['id']}/remap", json={
+    r = client.post(f"/api/farms/{farm['id']}/remap", json={"captured_by_role": "agent",
         "geometry": make_polygon(cx=-2.431, cy=5.801), "capture_method": "gps_walk",
         "gps_accuracy_m": 5.0, "flagged_points": 0, "captured_by": "Field Agent 2",
     })
@@ -505,7 +505,7 @@ def test_remap_creates_v2_with_v1_unchanged(client):
 
 def test_remap_rejects_self_intersecting_polygon(client):
     farm = client.post("/api/farms", json=VALID_FARM).json()
-    r = client.post(f"/api/farms/{farm['id']}/remap", json={
+    r = client.post(f"/api/farms/{farm['id']}/remap", json={"captured_by_role": "agent",
         "geometry": {"type": "Polygon", "coordinates": [[[0, 0], [1, 1], [1, 0], [0, 1], [0, 0]]]},
     })
     assert r.status_code == 422
@@ -517,7 +517,7 @@ def test_remap_resets_status_and_blocks_batching(client, mock_screen):
     verified = create_verified_farm(client, mock_screen)
     assert verified["status"] == "Verified"
 
-    remapped = client.post(f"/api/farms/{verified['id']}/remap", json={
+    remapped = client.post(f"/api/farms/{verified['id']}/remap", json={"captured_by_role": "agent",
         "geometry": make_polygon(cx=-2.432, cy=5.802),
     }).json()
     assert remapped["status"] == "Not screened"
@@ -533,7 +533,7 @@ def test_verification_links_to_the_boundary_version_it_screened(client, mock_scr
     assert v1["verification"]["run_id"]
     assert v1["boundary_version"] == 1
 
-    client.post(f"/api/farms/{farm['id']}/remap", json={"geometry": make_polygon(cx=-2.433, cy=5.803)})
+    client.post(f"/api/farms/{farm['id']}/remap", json={"captured_by_role": "agent", "geometry": make_polygon(cx=-2.433, cy=5.803)})
     v2 = client.post(f"/api/farms/{farm['id']}/verify").json()
     assert v2["boundary_version"] == 2
 
@@ -546,7 +546,7 @@ def test_batch_keeps_the_boundary_version_it_was_built_with(client, mock_screen)
     v1_geometry = batch["contributions"][0]["farm"]["geometry"]
     assert batch["contributions"][0]["farm"]["boundary_version"] == 1
 
-    client.post(f"/api/farms/{verified['id']}/remap", json={"geometry": make_polygon(cx=-2.434, cy=5.804)})
+    client.post(f"/api/farms/{verified['id']}/remap", json={"captured_by_role": "agent", "geometry": make_polygon(cx=-2.434, cy=5.804)})
 
     got = client.get(f"/api/batches/{batch['id']}").json()
     assert got["contributions"][0]["farm"]["boundary_version"] == 1
@@ -643,3 +643,61 @@ def test_bag_page_has_no_full_farmer_name(client, mock_screen):
     assert "village" not in body["farm"]
     assert "consent_given" not in body["farm"]
     assert "consent_photo_path" not in body["farm"]
+
+
+# ---------------------------------------------------------------- server-side roles (issue #21)
+
+def _pending_batch(client, mock_screen):
+    verified = create_verified_farm(client, mock_screen)
+    return client.post("/api/batches", json={
+        "contributions": [{"farm_id": verified["id"], "bags": 1000}],
+        "justification_note": "Needs admin review.",
+    }).json()
+
+
+def test_review_requires_admin(client, mock_screen):
+    farm = create_verified_farm(client, mock_screen, protected_areas=["Ankasa Conservation Area"])
+    body = {"decision": "clear", "reason": "Cloud cover", "note": "Checked."}
+    for role in (None, "agent", "warehouse"):
+        r = client.post(f"/api/farms/{farm['id']}/review", json={**body, "reviewer_role": role})
+        assert r.status_code == 403
+        assert "Brand admin" in r.json()["detail"]
+    r = client.post(f"/api/farms/{farm['id']}/review", json={**body, "reviewer_role": "admin"})
+    assert r.status_code == 200
+
+
+def test_consent_photo_requires_admin(client):
+    farm = client.post("/api/farms", json={**VALID_FARM, "consent_photo_base64": _tiny_jpeg_base64()}).json()
+    url = f"/api/farms/{farm['id']}/consent_photo"
+    assert client.get(url).status_code == 403
+    assert client.get(url, params={"role": "agent"}).status_code == 403
+    assert client.get(url, params={"role": "admin"}).status_code == 200
+
+
+def test_cancel_requires_warehouse_operator(client, mock_screen):
+    batch = _pending_batch(client, mock_screen)
+    url = f"/api/batches/{batch['id']}/cancel"
+    for role in (None, "agent", "admin"):
+        r = client.post(url, json={"by_role": role})
+        assert r.status_code == 403
+        assert "warehouse operator" in r.json()["detail"]
+    assert client.post(url, json={"by_role": "warehouse"}).status_code == 200
+
+
+def test_approve_and_reject_require_admin(client, mock_screen):
+    batch = _pending_batch(client, mock_screen)
+    assert client.post(f"/api/batches/{batch['id']}/reject",
+                       json={"by_role": "warehouse", "reason": "x"}).status_code == 403
+    assert client.post(f"/api/batches/{batch['id']}/reject",
+                       json={"by_role": "admin", "reason": "Not enough evidence."}).status_code == 200
+
+
+def test_remap_requires_field_agent(client):
+    farm = client.post("/api/farms", json=VALID_FARM).json()
+    geometry = make_polygon(cx=-2.433, cy=5.803)
+    for role in (None, "admin", "warehouse"):
+        r = client.post(f"/api/farms/{farm['id']}/remap", json={"geometry": geometry, "captured_by_role": role})
+        assert r.status_code == 403
+        assert "field agent" in r.json()["detail"]
+    r = client.post(f"/api/farms/{farm['id']}/remap", json={"geometry": geometry, "captured_by_role": "agent"})
+    assert r.status_code == 200

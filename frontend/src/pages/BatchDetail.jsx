@@ -110,7 +110,7 @@ export default function BatchDetail() {
           {batch.submission_note && (
             <p className="small" style={{ margin: '6px 0 0' }}>Justification: {batch.submission_note}</p>
           )}
-          {!isAdmin && (
+          {getUser()?.role === 'warehouse' && (
             <div style={{ marginTop: 8 }}>
               <button className="btn" disabled={busy} onClick={cancel}>Cancel request</button>
             </div>

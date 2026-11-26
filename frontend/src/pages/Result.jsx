@@ -30,7 +30,7 @@ function ReviewPanel({ farm, isAdmin, onReviewed }) {
     setError(''); setBusy(true)
     try {
       const updated = await api.reviewFarm(farm.id, {
-        decision, reason, note: note.trim(), reviewer_name: getUser()?.name || '',
+        decision, reason, note: note.trim(), reviewer_name: getUser()?.name || '', reviewer_role: getUser()?.role,
       })
       onReviewed(updated)
       setDecision(null); setNote('')
@@ -172,7 +172,7 @@ export default function Result() {
           </p>
         </div>
         <div className="row">
-          <Link className="btn" to={`/farms/${farm.id}/remap`}>⬠ Remap boundary</Link>
+          {getUser()?.role === 'agent' && <Link className="btn" to={`/farms/${farm.id}/remap`}>⬠ Remap boundary</Link>}
           <button className="btn" onClick={run} disabled={busy}>{busy ? 'Screening… (10–40 s)' : v ? '↻ Re-run check' : 'Run satellite check'}</button>
           {v && <a className="btn primary" href={api.reportUrl(farm.id)}>⤓ Export evidence</a>}
         </div>
