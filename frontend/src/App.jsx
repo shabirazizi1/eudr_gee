@@ -19,9 +19,12 @@ export function getUser() {
   try { return JSON.parse(localStorage.getItem('eudr_user')) } catch { return null }
 }
 
+// Mirrors the backend's require_role() checks so no role sees a button that would 403.
+export const hasRole = (...roles) => roles.includes(getUser()?.role)
+
 const TABS = [
   { to: '/dashboard', icon: '🏠', label: 'Overview' },
-  { to: '/capture', icon: '✎', label: 'Capture' },
+  { to: '/capture', icon: '✎', label: 'Capture', roles: ['agent', 'admin'] },
   { to: '/farms', icon: '🛰', label: 'Farms' },
   { to: '/batches', icon: '📦', label: 'Batches' },
 ]
@@ -68,7 +71,7 @@ function Shell({ user, children }) {
         <div className="brand"><span className="brand-mark">❦</span> COCOA INTELLIGENCE</div>
         <div className="nav-label">WORKSPACE</div>
         <NavLink to="/dashboard" className="nav-item">Overview</NavLink>
-        <NavLink to="/capture" className="nav-item">Farm registry</NavLink>
+        {hasRole('agent', 'admin') && <NavLink to="/capture" className="nav-item">Farm registry</NavLink>}
         <NavLink to="/farms" className="nav-item">Satellite verification</NavLink>
         <NavLink to="/batches" className="nav-item">
           Batches{pendingApprovals > 0 && <span className="pill warn small" style={{ marginLeft: 8 }}>{pendingApprovals}</span>}
@@ -102,7 +105,7 @@ function Shell({ user, children }) {
       </div>
 
       <nav className="tabbar">
-        {TABS.map((t) => (
+        {TABS.filter((t) => !t.roles || hasRole(...t.roles)).map((t) => (
           <NavLink key={t.to} to={t.to} className="tab-item">
             <span className="tab-icon">{t.icon}</span>
             <span>

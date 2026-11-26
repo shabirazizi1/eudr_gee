@@ -137,7 +137,7 @@ def main():
         with TestClient(app) as c:
             with Session(engine) as s:
                 for f in s.exec(select(Farm)).all():
-                    r = c.post(f"/api/farms/{f.id}/verify").json()
+                    r = c.post(f"/api/farms/{f.id}/verify", params={"role": "admin"}).json()
                     print(f"  {f.code} {f.name}: {r['risk_level']} ({r['risk_score']}) "
                           f"[{r['verification']['source']}]")
 

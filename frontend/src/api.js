@@ -26,7 +26,7 @@ export const api = {
   farms: (season) => request(season ? `/farms?season=${encodeURIComponent(season)}` : '/farms'),
   farm: (id) => request(`/farms/${id}`),
   createFarm: (body) => request('/farms', { method: 'POST', body: JSON.stringify(body) }),
-  verify: (id) => request(`/farms/${id}/verify`, { method: 'POST' }),
+  verify: (id, role) => request(`/farms/${id}/verify?role=${encodeURIComponent(role || '')}`, { method: 'POST' }),
   remapFarm: (id, body) => request(`/farms/${id}/remap`, { method: 'POST', body: JSON.stringify(body) }),
   boundaryVersions: (id) => request(`/farms/${id}/boundary_versions`),
   reviewFarm: (id, body) => request(`/farms/${id}/review`, { method: 'POST', body: JSON.stringify(body) }),

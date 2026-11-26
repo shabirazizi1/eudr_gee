@@ -14,6 +14,7 @@ from tests.conftest import make_polygon
 VALID_FARM = {
     "name": "Adom Cocoa Farm",
     "farmer_name": "Ama Mensah",
+    "captured_by_role": "agent",
     "village": "Asankrangwa",
     "capture_method": "gps_walk",
     "gps_accuracy_m": 4.3,
@@ -26,6 +27,7 @@ VALID_FARM = {
 SELF_INTERSECTING = {
     "name": "Bad Farm",
     "farmer_name": "Someone",
+    "captured_by_role": "agent",
     "geometry": {"type": "Polygon", "coordinates": [[[0, 0], [1, 1], [1, 0], [0, 1], [0, 0]]]},
     "consent_given": True,
     "consent_date": "2026-10-01",
@@ -34,6 +36,7 @@ SELF_INTERSECTING = {
 POINT_FARM = {
     "name": "Tiny Cocoa Plot",
     "farmer_name": "Kwame Asante",
+    "captured_by_role": "agent",
     "village": "Enchi Rd",
     "geometry": {"type": "Point", "coordinates": [-2.4305, 5.8003]},
     "capture_method": "gps_point",
@@ -54,7 +57,7 @@ def _tiny_jpeg_base64() -> str:
 def create_verified_farm(client, mock_screen, farm_payload=None, **screen_overrides):
     farm = client.post("/api/farms", json=farm_payload or VALID_FARM).json()
     mock_screen(**screen_overrides)
-    verified = client.post(f"/api/farms/{farm['id']}/verify").json()
+    verified = client.post(f"/api/farms/{farm['id']}/verify", params={"role": "agent"}).json()
     return verified
 
 
@@ -168,7 +171,7 @@ def test_report_before_verify_is_400(client):
 
 def test_verify_then_report_is_200(client, mock_screen):
     farm = client.post("/api/farms", json=VALID_FARM).json()
-    v = client.post(f"/api/farms/{farm['id']}/verify")
+    v = client.post(f"/api/farms/{farm['id']}/verify", params={"role": "agent"})
     assert v.status_code == 200
     assert v.json()["status"] == "Verified"
 
@@ -180,7 +183,7 @@ def test_verify_then_report_is_200(client, mock_screen):
 
 def test_farm_evidence_pdf_has_no_full_farmer_name_or_consent(client, mock_screen):
     farm = client.post("/api/farms", json=VALID_FARM).json()
-    client.post(f"/api/farms/{farm['id']}/verify")
+    client.post(f"/api/farms/{farm['id']}/verify", params={"role": "agent"})
     r = client.get(f"/api/farms/{farm['id']}/report.pdf")
     assert r.status_code == 200
 
@@ -202,7 +205,7 @@ def test_point_farm_evidence_and_batch_pdfs_render(client, mock_screen):
     text = "\n".join(p.get_text() for p in pymupdf.open(stream=r.content, filetype="pdf"))
     assert "Point (declared 1.50 ha)" in text
 
-    batch = client.post("/api/batches", json={
+    batch = client.post("/api/batches", json={"created_by_role": "warehouse",
         "contributions": [{"farm_id": point_farm["id"], "bags": 3}],
     }).json()
     r = client.get(f"/api/batches/{batch['id']}/report.pdf")
@@ -215,7 +218,7 @@ def test_point_farm_evidence_and_batch_pdfs_render(client, mock_screen):
 
 def test_batch_blocks_non_verified_farm(client):
     farm = client.post("/api/farms", json=VALID_FARM).json()  # never verified -> "Not screened"
-    r = client.post("/api/batches", json={"contributions": [{"farm_id": farm["id"], "bags": 5}]})
+    r = client.post("/api/batches", json={"created_by_role": "warehouse", "contributions": [{"farm_id": farm["id"], "bags": 5}]})
     assert r.status_code == 422
 
 
@@ -230,7 +233,7 @@ def test_review_clear_allows_batch_join(client, mock_screen):
     assert r.status_code == 200
     assert r.json()["status"] == "Verified (manual review)"
 
-    batch = client.post("/api/batches", json={
+    batch = client.post("/api/batches", json={"created_by_role": "warehouse",
         "contributions": [{"farm_id": verified["id"], "bags": 5}],
     })
     assert batch.status_code == 201
@@ -267,7 +270,7 @@ def test_capacity_maths_for_polygon_and_point_farms(client, mock_screen):
 
 def test_batch_exceeding_capacity_is_blocked_without_justification(client, mock_screen):
     verified = create_verified_farm(client, mock_screen)
-    r = client.post("/api/batches", json={
+    r = client.post("/api/batches", json={"created_by_role": "warehouse",
         "contributions": [{"farm_id": verified["id"], "bags": 1000}],  # 64,000 kg -- always over capacity
     })
     assert r.status_code == 422
@@ -278,10 +281,10 @@ def test_batch_exceeding_capacity_is_blocked_without_justification(client, mock_
 
 def test_submit_over_capacity_batch_is_pending_and_reserves_capacity(client, mock_screen):
     verified = create_verified_farm(client, mock_screen)
-    r = client.post("/api/batches", json={
+    r = client.post("/api/batches", json={"created_by_role": "warehouse",
         "contributions": [{"farm_id": verified["id"], "bags": 1000}],
         "justification_note": "Second flowering this season, confirmed by field visit.",
-        "created_by": "Kofi Mensah", "created_by_role": "warehouse",
+        "created_by": "Kofi Mensah",
     })
     assert r.status_code == 201
     batch = r.json()
@@ -297,7 +300,7 @@ def test_submit_over_capacity_batch_is_pending_and_reserves_capacity(client, moc
 
 def test_no_exports_while_batch_is_pending(client, mock_screen):
     verified = create_verified_farm(client, mock_screen)
-    batch = client.post("/api/batches", json={
+    batch = client.post("/api/batches", json={"created_by_role": "warehouse",
         "contributions": [{"farm_id": verified["id"], "bags": 1000}],
         "justification_note": "Needs admin review.",
     }).json()
@@ -309,7 +312,7 @@ def test_no_exports_while_batch_is_pending(client, mock_screen):
 
 def test_approve_sets_overrides_and_generates_bags(client, mock_screen):
     verified = create_verified_farm(client, mock_screen)
-    batch = client.post("/api/batches", json={
+    batch = client.post("/api/batches", json={"created_by_role": "warehouse",
         "contributions": [{"farm_id": verified["id"], "bags": 1000}],
         "justification_note": "Second flowering this season, confirmed by field visit.",
     }).json()
@@ -337,7 +340,7 @@ def test_approve_sets_overrides_and_generates_bags(client, mock_screen):
 
 def test_approve_without_override_reason_is_rejected(client, mock_screen):
     verified = create_verified_farm(client, mock_screen)
-    batch = client.post("/api/batches", json={
+    batch = client.post("/api/batches", json={"created_by_role": "warehouse",
         "contributions": [{"farm_id": verified["id"], "bags": 1000}],
         "justification_note": "Needs admin review.",
     }).json()
@@ -350,7 +353,7 @@ def test_approve_without_override_reason_is_rejected(client, mock_screen):
 
 def test_non_admin_cannot_approve_or_reject(client, mock_screen):
     verified = create_verified_farm(client, mock_screen)
-    batch = client.post("/api/batches", json={
+    batch = client.post("/api/batches", json={"created_by_role": "warehouse",
         "contributions": [{"farm_id": verified["id"], "bags": 1000}],
         "justification_note": "Needs admin review.",
     }).json()
@@ -370,7 +373,7 @@ def test_non_admin_cannot_approve_or_reject(client, mock_screen):
 
 def test_reject_releases_reserved_capacity(client, mock_screen):
     verified = create_verified_farm(client, mock_screen)
-    batch = client.post("/api/batches", json={
+    batch = client.post("/api/batches", json={"created_by_role": "warehouse",
         "contributions": [{"farm_id": verified["id"], "bags": 1000}],
         "justification_note": "Needs admin review.",
     }).json()
@@ -391,7 +394,7 @@ def test_reject_releases_reserved_capacity(client, mock_screen):
 
 def test_cancel_pending_batch_releases_capacity(client, mock_screen):
     verified = create_verified_farm(client, mock_screen)
-    batch = client.post("/api/batches", json={
+    batch = client.post("/api/batches", json={"created_by_role": "warehouse",
         "contributions": [{"farm_id": verified["id"], "bags": 1000}],
         "justification_note": "Needs admin review.",
     }).json()
@@ -412,21 +415,21 @@ def test_capacity_is_per_season(client, mock_screen):
     capacity = verified["area_ha"] * config.YIELD_KG_PER_HA
     bags_70pct = int((capacity * 0.7) / 64)
 
-    first = client.post("/api/batches", json={
+    first = client.post("/api/batches", json={"created_by_role": "warehouse",
         "contributions": [{"farm_id": verified["id"], "bags": bags_70pct}],
         "season": "2026/27",
     })
     assert first.status_code == 201
 
     # same season, same farm, another 70% -> exceeds the remaining 30% -> blocked
-    blocked = client.post("/api/batches", json={
+    blocked = client.post("/api/batches", json={"created_by_role": "warehouse",
         "contributions": [{"farm_id": verified["id"], "bags": bags_70pct}],
         "season": "2026/27",
     })
     assert blocked.status_code == 422
 
     # a new season resets remaining capacity -> the same request now succeeds
-    new_season = client.post("/api/batches", json={
+    new_season = client.post("/api/batches", json={"created_by_role": "warehouse",
         "contributions": [{"farm_id": verified["id"], "bags": bags_70pct}],
         "season": "2027/28",
     })
@@ -438,7 +441,7 @@ def test_remapped_area_applies_to_new_batches_only(client, mock_screen):
     capacity1 = verified["area_ha"] * config.YIELD_KG_PER_HA
     bags_half = int((capacity1 * 0.5) / 64)
 
-    batch1 = client.post("/api/batches", json={
+    batch1 = client.post("/api/batches", json={"created_by_role": "warehouse",
         "contributions": [{"farm_id": verified["id"], "bags": bags_half}],
         "season": "2026/27",
     })
@@ -450,11 +453,11 @@ def test_remapped_area_applies_to_new_batches_only(client, mock_screen):
     remapped = client.post(f"/api/farms/{verified['id']}/remap", json={"captured_by_role": "agent", "geometry": small_square}).json()
     assert remapped["area_ha"] < verified["area_ha"]
     mock_screen()
-    client.post(f"/api/farms/{verified['id']}/verify")
+    client.post(f"/api/farms/{verified['id']}/verify", params={"role": "agent"})
 
     # the new (smaller) capacity applies to a NEW batch in the same season -- already over
     # capacity from batch1 alone, so even one more bag is blocked
-    blocked = client.post("/api/batches", json={
+    blocked = client.post("/api/batches", json={"created_by_role": "warehouse",
         "contributions": [{"farm_id": verified["id"], "bags": 1}],
         "season": "2026/27",
     })
@@ -463,7 +466,7 @@ def test_remapped_area_applies_to_new_batches_only(client, mock_screen):
     # the existing batch1 is untouched by the remap
     assert client.get(f"/api/batches/{batch1_id}").status_code == 200
 
-    batch = client.post("/api/batches", json={
+    batch = client.post("/api/batches", json={"created_by_role": "warehouse",
         "contributions": [{"farm_id": verified["id"], "bags": 5}],
     })
     assert batch.status_code == 422
@@ -523,24 +526,24 @@ def test_remap_resets_status_and_blocks_batching(client, mock_screen):
     assert remapped["status"] == "Not screened"
     assert remapped["risk_score"] is None
 
-    r = client.post("/api/batches", json={"contributions": [{"farm_id": verified["id"], "bags": 5}]})
+    r = client.post("/api/batches", json={"created_by_role": "warehouse", "contributions": [{"farm_id": verified["id"], "bags": 5}]})
     assert r.status_code == 422
 
 
 def test_verification_links_to_the_boundary_version_it_screened(client, mock_screen):
     farm = client.post("/api/farms", json=VALID_FARM).json()
-    v1 = client.post(f"/api/farms/{farm['id']}/verify").json()
+    v1 = client.post(f"/api/farms/{farm['id']}/verify", params={"role": "agent"}).json()
     assert v1["verification"]["run_id"]
     assert v1["boundary_version"] == 1
 
     client.post(f"/api/farms/{farm['id']}/remap", json={"captured_by_role": "agent", "geometry": make_polygon(cx=-2.433, cy=5.803)})
-    v2 = client.post(f"/api/farms/{farm['id']}/verify").json()
+    v2 = client.post(f"/api/farms/{farm['id']}/verify", params={"role": "agent"}).json()
     assert v2["boundary_version"] == 2
 
 
 def test_batch_keeps_the_boundary_version_it_was_built_with(client, mock_screen):
     verified = create_verified_farm(client, mock_screen)
-    batch = client.post("/api/batches", json={
+    batch = client.post("/api/batches", json={"created_by_role": "warehouse",
         "contributions": [{"farm_id": verified["id"], "bags": 5}],
     }).json()
     v1_geometry = batch["contributions"][0]["farm"]["geometry"]
@@ -560,7 +563,7 @@ def test_batch_keeps_the_boundary_version_it_was_built_with(client, mock_screen)
 def test_batch_geolocation_export_is_valid(client, mock_screen):
     polygon_farm = create_verified_farm(client, mock_screen)
     point_farm = create_verified_farm(client, mock_screen, farm_payload=POINT_FARM)
-    batch = client.post("/api/batches", json={
+    batch = client.post("/api/batches", json={"created_by_role": "warehouse",
         "contributions": [
             {"farm_id": polygon_farm["id"], "bags": 5},
             {"farm_id": point_farm["id"], "bags": 3},
@@ -609,7 +612,7 @@ def test_batch_geolocation_export_is_valid(client, mock_screen):
 def test_bag_lookup_and_404(client, mock_screen):
     verified = create_verified_farm(client, mock_screen)
     assert verified["status"] == "Verified"
-    batch = client.post("/api/batches", json={
+    batch = client.post("/api/batches", json={"created_by_role": "warehouse",
         "contributions": [{"farm_id": verified["id"], "bags": 3}],
     }).json()
 
@@ -630,7 +633,7 @@ def test_bag_lookup_and_404(client, mock_screen):
 
 def test_bag_page_has_no_full_farmer_name(client, mock_screen):
     verified = create_verified_farm(client, mock_screen)
-    batch = client.post("/api/batches", json={
+    batch = client.post("/api/batches", json={"created_by_role": "warehouse",
         "contributions": [{"farm_id": verified["id"], "bags": 3}],
     }).json()
     with Session(engine) as s:
@@ -647,57 +650,84 @@ def test_bag_page_has_no_full_farmer_name(client, mock_screen):
 
 # ---------------------------------------------------------------- server-side roles (issue #21)
 
+ALL_ROLES = (None, "agent", "admin", "warehouse")
+
+
 def _pending_batch(client, mock_screen):
     verified = create_verified_farm(client, mock_screen)
     return client.post("/api/batches", json={
+        "created_by_role": "warehouse",
         "contributions": [{"farm_id": verified["id"], "bags": 1000}],
         "justification_note": "Needs admin review.",
     }).json()
 
 
-def test_review_requires_admin(client, mock_screen):
-    farm = create_verified_farm(client, mock_screen, protected_areas=["Ankasa Conservation Area"])
-    body = {"decision": "clear", "reason": "Cloud cover", "note": "Checked."}
-    for role in (None, "agent", "warehouse"):
-        r = client.post(f"/api/farms/{farm['id']}/review", json={**body, "reviewer_role": role})
-        assert r.status_code == 403
-        assert "Brand admin" in r.json()["detail"]
-    r = client.post(f"/api/farms/{farm['id']}/review", json={**body, "reviewer_role": "admin"})
-    assert r.status_code == 200
+def _check_roles(call, allowed, ok_status=200):
+    """Every role outside `allowed` gets 403; each allowed role succeeds."""
+    for role in ALL_ROLES:
+        r = call(role)
+        if role in allowed:
+            assert r.status_code == ok_status, (role, r.text)
+        else:
+            assert r.status_code == 403, (role, r.text)
+            assert "Only a" in r.json()["detail"]
 
 
-def test_consent_photo_requires_admin(client):
-    farm = client.post("/api/farms", json={**VALID_FARM, "consent_photo_base64": _tiny_jpeg_base64()}).json()
-    url = f"/api/farms/{farm['id']}/consent_photo"
-    assert client.get(url).status_code == 403
-    assert client.get(url, params={"role": "agent"}).status_code == 403
-    assert client.get(url, params={"role": "admin"}).status_code == 200
+def test_create_farm_roles(client):
+    _check_roles(lambda role: client.post("/api/farms", json={**VALID_FARM, "captured_by_role": role}),
+                 ("agent", "admin"), ok_status=201)
 
 
-def test_cancel_requires_warehouse_operator(client, mock_screen):
-    batch = _pending_batch(client, mock_screen)
-    url = f"/api/batches/{batch['id']}/cancel"
-    for role in (None, "agent", "admin"):
-        r = client.post(url, json={"by_role": role})
-        assert r.status_code == 403
-        assert "warehouse operator" in r.json()["detail"]
-    assert client.post(url, json={"by_role": "warehouse"}).status_code == 200
+def test_verify_roles(client, mock_screen):
+    farm = client.post("/api/farms", json=VALID_FARM).json()
+    _check_roles(lambda role: client.post(f"/api/farms/{farm['id']}/verify", params={"role": role} if role else {}),
+                 ("agent", "admin"))
 
 
-def test_approve_and_reject_require_admin(client, mock_screen):
-    batch = _pending_batch(client, mock_screen)
-    assert client.post(f"/api/batches/{batch['id']}/reject",
-                       json={"by_role": "warehouse", "reason": "x"}).status_code == 403
-    assert client.post(f"/api/batches/{batch['id']}/reject",
-                       json={"by_role": "admin", "reason": "Not enough evidence."}).status_code == 200
-
-
-def test_remap_requires_field_agent(client):
+def test_remap_roles(client):
     farm = client.post("/api/farms", json=VALID_FARM).json()
     geometry = make_polygon(cx=-2.433, cy=5.803)
-    for role in (None, "admin", "warehouse"):
-        r = client.post(f"/api/farms/{farm['id']}/remap", json={"geometry": geometry, "captured_by_role": role})
-        assert r.status_code == 403
-        assert "field agent" in r.json()["detail"]
-    r = client.post(f"/api/farms/{farm['id']}/remap", json={"geometry": geometry, "captured_by_role": "agent"})
-    assert r.status_code == 200
+    _check_roles(lambda role: client.post(f"/api/farms/{farm['id']}/remap",
+                                          json={"geometry": geometry, "captured_by_role": role}),
+                 ("agent", "admin"))
+
+
+def test_review_roles(client, mock_screen):
+    body = {"decision": "clear", "reason": "Cloud cover", "note": "Checked."}
+
+    def call(role):  # a fresh Under-review farm each time, since a review closes it
+        farm = create_verified_farm(client, mock_screen, protected_areas=["Ankasa Conservation Area"])
+        return client.post(f"/api/farms/{farm['id']}/review", json={**body, "reviewer_role": role})
+    _check_roles(call, ("admin",))
+
+
+def test_consent_photo_roles(client):
+    farm = client.post("/api/farms", json={**VALID_FARM, "consent_photo_base64": _tiny_jpeg_base64()}).json()
+    _check_roles(lambda role: client.get(f"/api/farms/{farm['id']}/consent_photo",
+                                         params={"role": role} if role else {}),
+                 ("admin",))
+
+
+def test_create_batch_roles(client, mock_screen):
+    verified = create_verified_farm(client, mock_screen)
+    _check_roles(lambda role: client.post("/api/batches", json={
+        "created_by_role": role, "contributions": [{"farm_id": verified["id"], "bags": 1}]}),
+                 ("warehouse",), ok_status=201)
+
+
+def test_cancel_roles(client, mock_screen):
+    _check_roles(lambda role: client.post(f"/api/batches/{_pending_batch(client, mock_screen)['id']}/cancel",
+                                          json={"by_role": role}),
+                 ("warehouse", "admin"))
+
+
+def test_reject_roles(client, mock_screen):
+    _check_roles(lambda role: client.post(f"/api/batches/{_pending_batch(client, mock_screen)['id']}/reject",
+                                          json={"by_role": role, "reason": "Not enough evidence."}),
+                 ("admin",))
+
+
+def test_approve_roles(client, mock_screen):
+    _check_roles(lambda role: client.post(f"/api/batches/{_pending_batch(client, mock_screen)['id']}/approve",
+                                          json={"approved_by_role": role, "overrides": []}),
+                 ("admin",), ok_status=422)  # admin passes the role check, then needs override reasons

@@ -85,15 +85,25 @@ Batches, Account) so the whole workflow works in the field.
 
 ## Roles & permissions
 
-Login has no real password check, so anyone can switch roles freely. This table is what each
-role is *meant* to do; only the row marked **server-enforced** is actually checked by the backend.
+Login has no real password check, so anyone can switch roles freely. The role you pick is sent
+with each restricted request and **checked by the backend**, which answers `403` for the wrong
+role; the UI hides buttons a role can't use. (MVP: the role comes from the client; real
+authentication is on the roadmap.)
 
-| Role | What they do | Enforcement |
-| --- | --- | --- |
-| **Field agent** | Register farms, capture boundaries, record consent, run satellite checks | UI only |
-| **Brand admin** | Review flagged farms; approve/reject pending batches; view the dashboard | Approve/reject is **server-enforced**; review is UI only |
-| **Warehouse operator** | Create batches, submit/cancel over-capacity requests, print labels, export PDFs | UI only |
-| **Buyer & public** | Scan a bag's QR code, view its public page, receive shipment PDFs | No login at all |
+| Action | Endpoint | Field agent | Brand admin | Warehouse operator |
+| --- | --- | :---: | :---: | :---: |
+| Register a farm | `POST /api/farms` | ✅ | ✅ | ❌ |
+| Run a satellite check | `POST /api/farms/{id}/verify` | ✅ | ✅ | ❌ |
+| Remap a boundary | `POST /api/farms/{id}/remap` | ✅ | ✅ | ❌ |
+| Review a flagged farm (clear / confirm) | `POST /api/farms/{id}/review` | ❌ | ✅ | ❌ |
+| View a consent photo | `GET /api/farms/{id}/consent_photo` | ❌ | ✅ | ❌ |
+| Create a batch | `POST /api/batches` | ❌ | ❌ | ✅ |
+| Approve / reject a pending batch | `POST /api/batches/{id}/approve`, `/reject` | ❌ | ✅ | ❌ |
+| Cancel a pending batch | `POST /api/batches/{id}/cancel` | ❌ | ✅ | ✅ |
+
+Admins approve batches but don't create them (separation of duties). Everything else — the
+dashboard, farm and batch pages, PDFs and labels — is open to every role, and a bag's public QR
+page (`/bag/:id`) needs no login at all.
 
 ## For developers
 

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { api } from '../api.js'
+import { getUser, hasRole } from '../App.jsx'
 import RiskBadge from '../components/RiskBadge.jsx'
 
 // F5 – Brand admin evidence & compliance dashboard (Figure 4)
@@ -29,7 +30,7 @@ export default function Dashboard({ listOnly = false }) {
 
   const verify = async (id) => {
     setRunning(id)
-    try { await api.verify(id); await load() } catch (e) { setError(e.message) } finally { setRunning(null) }
+    try { await api.verify(id, getUser()?.role); await load() } catch (e) { setError(e.message) } finally { setRunning(null) }
   }
 
   const matchesFilter = (f) => {
@@ -52,7 +53,7 @@ export default function Dashboard({ listOnly = false }) {
           <h1>{listOnly ? 'Satellite verification queue.' : 'Know your cocoa. Know your impact.'}</h1>
           <p className="muted">Your sourcing portfolio at a glance · 2026 / 27 harvest · Ghana</p>
         </div>
-        <button className="btn primary" onClick={() => nav('/capture')}>+ Add farm</button>
+        {hasRole('agent', 'admin') && <button className="btn primary" onClick={() => nav('/capture')}>+ Add farm</button>}
       </div>
       {error && <p className="bad-text">{error}</p>}
 
@@ -122,7 +123,7 @@ export default function Dashboard({ listOnly = false }) {
                 <td data-label="Status">{f.status}</td>
                 <td data-label="Last screened">{f.last_screened ? new Date(f.last_screened).toLocaleDateString() : '–'}</td>
                 <td data-label="Action">
-                  {!f.risk_level ? (
+                  {!f.risk_level ? (!hasRole('agent', 'admin') ? <span className="muted">Not screened</span> :
                     <button className="link-btn" disabled={running === f.id} onClick={() => verify(f.id)}>
                       {running === f.id ? 'Screening…' : 'Run satellite check'}
                     </button>

@@ -41,6 +41,7 @@ class FarmCreate(BaseModel):
     harvest_date: Optional[str] = None
     crop: str = "Cocoa"
     captured_by: str = ""
+    captured_by_role: Optional[str] = None
     geometry: dict  # GeoJSON Polygon, or Point for a declared-area capture (issue #5)
     capture_method: str = "drawn"  # "gps_walk", "drawn", or "gps_point"
     gps_accuracy_m: Optional[float] = None
@@ -108,9 +109,12 @@ class RemapCreate(BaseModel):
     declared_area_ha: Optional[float] = None
 
 
-def require_role(role: Optional[str], allowed: str, message: str) -> None:
+FIELD_ROLES = ("agent", "admin")  # create farm, satellite check, remap (admins fix boundary errors)
+
+
+def require_role(role: Optional[str], allowed: tuple[str, ...], message: str) -> None:
     # MVP: role comes from the client; real authentication is on the roadmap.
-    if role != allowed:
+    if role not in allowed:
         raise HTTPException(403, message)
 
 
@@ -519,6 +523,7 @@ def list_farms(season: Optional[str] = None, session: Session = Depends(get_sess
 
 @app.post("/api/farms", status_code=201)
 def create_farm(body: FarmCreate, session: Session = Depends(get_session)):
+    require_role(body.captured_by_role, FIELD_ROLES, "Only a field agent or Brand admin can register a farm.")
     if not body.consent_given or not (body.consent_date or "").strip():
         raise HTTPException(422, detail=["Farmer consent (checkbox + date) is required before a farm can be submitted."])
     errors = validate_geometry(body.geometry, body.declared_area_ha)
@@ -576,7 +581,7 @@ def remap_farm(farm_id: int, body: RemapCreate, session: Session = Depends(get_s
     farm = session.get(Farm, farm_id)
     if not farm:
         raise HTTPException(404, "Farm not found")
-    require_role(body.captured_by_role, "agent", "Only a field agent can remap a farm boundary.")
+    require_role(body.captured_by_role, FIELD_ROLES, "Only a field agent or Brand admin can remap a farm boundary.")
     errors = validate_geometry(body.geometry, body.declared_area_ha)
     if errors:
         raise HTTPException(422, detail=errors)
@@ -612,10 +617,11 @@ def farm_boundary_versions(farm_id: int, session: Session = Depends(get_session)
 
 
 @app.post("/api/farms/{farm_id}/verify")
-def verify_farm(farm_id: int, session: Session = Depends(get_session)):
+def verify_farm(farm_id: int, role: Optional[str] = None, session: Session = Depends(get_session)):
     farm = session.get(Farm, farm_id)
     if not farm:
         raise HTTPException(404, "Farm not found")
+    require_role(role, FIELD_ROLES, "Only a field agent or Brand admin can run a satellite check.")
     # A Point capture (issue #5, EUDR <= 4 ha) is screened as a circle buffered to the declared
     # area, since Hansen/NDVI/WDPA need an actual region, not a single pixel.
     screening_geometry = display_geometry(farm.geometry, farm.declared_area_ha)
@@ -653,7 +659,7 @@ def review_farm(farm_id: int, body: ReviewCreate, session: Session = Depends(get
     farm = session.get(Farm, farm_id)
     if not farm:
         raise HTTPException(404, "Farm not found")
-    require_role(body.reviewer_role, "admin", "Only a Brand admin can review a farm.")
+    require_role(body.reviewer_role, ("admin",), "Only a Brand admin can review a farm.")
     if farm.status != "Under review":
         raise HTTPException(400, "Only farms currently Under review can be reviewed.")
     if body.decision not in ("clear", "confirm"):
@@ -678,7 +684,7 @@ def consent_photo(farm_id: int, role: Optional[str] = None, session: Session = D
     """Admin-only (`?role=admin`): the consent photo itself is never embedded in list, public or
     PDF responses -- only reachable here, one farm at a time.
     """
-    require_role(role, "admin", "Only a Brand admin can view a consent photo.")
+    require_role(role, ("admin",), "Only a Brand admin can view a consent photo.")
     farm = session.get(Farm, farm_id)
     if not farm or not farm.consent_photo_path:
         raise HTTPException(404, "No consent photo on file")
@@ -753,6 +759,8 @@ def create_batch(body: BatchCreate, session: Session = Depends(get_session)):
     approval instead (issue #15) -- no bags yet; a Brand admin approves or rejects it later on
     the batch page. `season` is tracked per batch so a new season resets every farm's remaining
     capacity."""
+    # Separation of duties: admins approve batches, they don't create them.
+    require_role(body.created_by_role, ("warehouse",), "Only a warehouse operator can create a batch.")
     if not body.contributions:
         raise HTTPException(422, detail=["A batch needs at least one farm contribution."])
     season = body.season.strip() or config.DEFAULT_SEASON
@@ -885,12 +893,12 @@ def reject_batch(batch_id: int, body: BatchDecisionIn, session: Session = Depend
 
 @app.post("/api/batches/{batch_id}/cancel")
 def cancel_batch(batch_id: int, body: BatchDecisionIn, session: Session = Depends(get_session)):
-    """Issue #15: a warehouse operator can cancel a Pending approval batch before an admin
+    """Issue #15: a warehouse operator or Brand admin can cancel a Pending approval batch before an admin
     decides -- this also releases its reserved capacity."""
     batch = session.get(Batch, batch_id)
     if not batch:
         raise HTTPException(404, "Batch not found")
-    require_role(body.by_role, "warehouse", "Only a warehouse operator can cancel a batch.")
+    require_role(body.by_role, ("warehouse", "admin"), "Only a warehouse operator or Brand admin can cancel a batch.")
     if batch.status != "Pending approval":
         raise HTTPException(400, "Only a batch pending approval can be cancelled.")
     batch.status = "Cancelled"
