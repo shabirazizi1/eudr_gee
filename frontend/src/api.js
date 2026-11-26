@@ -43,9 +43,9 @@ export const api = {
   bagLabelsUrl: (id) => `/api/batches/${id}/bag_labels.pdf`,
   bag: (bagId) => request(`/bags/${bagId}`),
   // ---- bulk verify (F2.b) ----
-  startBulkVerify: (farmIds, triggeredBy = '') => request('/bulk/verify', {
+  startBulkVerify: (farmIds, triggeredBy = '', byRole = '') => request('/bulk/verify', {
     method: 'POST',
-    body: JSON.stringify({ farm_ids: farmIds, triggered_by: triggeredBy }),
+    body: JSON.stringify({ farm_ids: farmIds, triggered_by: triggeredBy, by_role: byRole }),
   }),
   bulkJob: (jobId) => request(`/bulk/${jobId}`),
   bulkSummary: (jobId) => request(`/bulk/${jobId}/summary`),

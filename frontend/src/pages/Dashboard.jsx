@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import { api } from '../api.js'
 import RiskBadge from '../components/RiskBadge.jsx'
 import BulkVerifyModal from '../components/BulkVerifyModal.jsx'
+import { getUser } from '../App.jsx'
 import RiskMap from '../components/RiskMap.jsx'
 
 // F5 – Brand admin evidence & compliance dashboard (Figure 4)
@@ -24,6 +25,8 @@ export default function Dashboard({ listOnly = false }) {
   const [running, setRunning] = useState(null)
   const [error, setError] = useState('')
   const [bulkOpen, setBulkOpen] = useState(false)
+  // The API enforces this too (403) -- hiding the button is just the honest UI (PR #20 review).
+  const isAdmin = getUser()?.role === 'admin'
 
   const load = () => Promise.all([api.summary(), api.farms()])
     .then(([s, f]) => { setSummary(s); setFarms(f) })
@@ -59,7 +62,7 @@ export default function Dashboard({ listOnly = false }) {
         </div>
         <div className="row gap">
           <button className="btn primary" onClick={() => nav('/capture')}>+ Add farm</button>
-          <button className="btn" onClick={() => setBulkOpen(true)}>⚡ Run bulk screening</button>
+          {isAdmin && <button className="btn" onClick={() => setBulkOpen(true)}>⚡ Run bulk screening</button>}
         </div>
       </div>
       {error && <p className="bad-text">{error}</p>}
@@ -161,7 +164,7 @@ export default function Dashboard({ listOnly = false }) {
       {/* bulk verify modal: the job outlives the modal, so a finished job just refreshes the list */}
       {bulkOpen && (
         <BulkVerifyModal
-          farms={farms.filter((f) => !f.risk_level)}
+          farms={farms}
           onClose={() => setBulkOpen(false)}
           onDone={() => load()}
         />

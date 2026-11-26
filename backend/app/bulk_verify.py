@@ -4,6 +4,12 @@ Runs many farm screenings in the background under a job id, so the UI can poll
 progress instead of firing N parallel /verify requests and hoping. Deliberately
 dependency-free: a small thread pool plus an in-process job registry. Swapping in
 Celery/RQ later only touches this file -- the API contract stays the same.
+
+Jobs live in memory only: a server restart drops them (farms keep whatever state they
+already had, nothing half-committed), which is fine for the demo but worth saying out loud.
+
+The screening itself is `screening.screen_farm`, the same helper /verify uses (PR #20):
+a declared-area Point farm is buffered before Earth Engine sees it.
 """
 import json
 import threading
@@ -14,9 +20,9 @@ from datetime import datetime, timezone
 
 from sqlmodel import Session, select
 
-from . import gee_service, geo, scoring
 from .db import engine
-from .models import BoundaryVersion, Farm, Verification
+from .models import BoundaryVersion, Farm
+from .screening import screen_farm
 
 WORKERS = 3                  # GEE quota is finite -- don't fan out harder than this
 JOB_TTL_SECONDS = 3600 * 6   # keep finished jobs in memory for 6 h, then drop
@@ -75,40 +81,23 @@ def _run_one(job_id: str, farm_id: int, farm_code: str):
             if farm is None:
                 raise ValueError("Farm no longer exists")
 
-            result = gee_service.screen(json.loads(farm.geometry), farm.area_ha)
-            scored = scoring.score(result)
-            result.update({"flags": scored["flags"] + geo.sanity_flags(farm.area_ha),
-                           "breakdown": scored["breakdown"]})
-
+            # Read the boundary version BEFORE screening: the verification must name the
+            # version that was current when this farm was picked up, not a remap landing mid-job.
             current_version = s.exec(
                 select(BoundaryVersion).where(BoundaryVersion.farm_id == farm.id)
                 .order_by(BoundaryVersion.version_no.desc())
             ).first()
-            verification = Verification(
-                farm_id=farm.id,
-                boundary_version_id=current_version.id if current_version else None,
-                run_id=f"GEE-{farm.code.split('-')[1]}-{uuid.uuid4().hex[:4].upper()}",
-                source=result["source"],
-                score=scored["score"],
-                level=scored["level"],
-                result_json=json.dumps(result),
-            )
-            farm.risk_score, farm.risk_level, farm.status = (
-                scored["score"], scored["level"], scored["status"])
-            farm.last_screened = datetime.now(timezone.utc)
-            s.add(verification)
-            s.add(farm)
-            s.commit()
-            s.refresh(verification)
+            verification = screen_farm(s, farm, current_version.id if current_version else None)
+            flags = json.loads(verification.result_json).get("flags", [])
 
             entry = {
                 "farm_id": farm.id,
                 "code": farm.code,
                 "name": farm.name,
                 "status": "ok",
-                "score": scored["score"],
-                "level": scored["level"],
-                "flags": scored["flags"],
+                "score": verification.score,
+                "level": verification.level,
+                "flags": flags,
                 "verification_id": verification.id,
                 "seconds": round(time.monotonic() - t0, 1),
             }

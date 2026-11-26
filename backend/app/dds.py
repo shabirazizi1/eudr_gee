@@ -37,10 +37,17 @@ def _farm_entry(contribution: dict, geolocation: dict | None = None) -> dict:
     screened_at = farm.get("last_screened")
     if hasattr(screened_at, "isoformat"):
         screened_at = screened_at.isoformat()
+    # The statement reports the verification frozen on the batch's boundary version, so its
+    # score/level must come from that verification -- not from a later re-run of the farm
+    # (PR #20 review). Falls back to the farm's own fields when no verification is attached.
+    risk_score = verification.get("score", farm["risk_score"])
+    risk_level = verification.get("level", farm["risk_level"])
+    if verification.get("created_at"):
+        screened_at = verification["created_at"]
     # The public payload already drops village/audit flags; the geolocation feature carries the
     # true Point/Polygon (batch_out's display geometry may be a buffered circle for points).
     properties = (geolocation or {}).get("properties", {})
-    return {
+    entry = {
         "farm_id": farm["id"],
         "farm_code": farm["code"],
         "farm_name": farm["name"],
@@ -51,27 +58,30 @@ def _farm_entry(contribution: dict, geolocation: dict | None = None) -> dict:
         "geolocation": (geolocation or {}).get("geometry", farm["geometry"]),
         "screening": {
             "status": farm["status"],
-            "risk_level": farm["risk_level"],
-            "risk_score": farm["risk_score"],
+            "risk_level": risk_level,
+            "risk_score": risk_score,
             "screened_at": screened_at,
             "run_id": verification.get("run_id"),
             "source": verification.get("source"),
             "flags": verification.get("flags", []),
             "needs_field_audit": farm.get("needs_field_audit", False),
         },
-        "manual_review": {
-            "decision": review["decision"],
-            "reason": review["reason"],
-            "note": review["note"],
-            "reviewer": review["reviewer_name"],
-            "reviewed_at": review["created_at"],
-        } if review else None,
         "contribution": {
             "bags": contribution["bags"],
             "kg_per_bag": contribution["kg_per_bag"],
             "net_weight_kg": contribution["kg"],
         },
     }
+    # Only present when a review actually exists -- no `"manual_review": null` padding.
+    if review:
+        entry["manual_review"] = {
+            "decision": review["decision"],
+            "reason": review["reason"],
+            "note": review["note"],
+            "reviewer": review["reviewer_name"],
+            "reviewed_at": review["created_at"],
+        }
+    return entry
 
 
 def _mitigation(entries: list[dict]) -> list[str]:
@@ -83,21 +93,22 @@ def _mitigation(entries: list[dict]) -> list[str]:
             measures.append(f"{code}: on-site verification and supplier engagement before shipment.")
         if screening["needs_field_audit"]:
             measures.append(f"{code}: field audit to confirm the plot boundary (drawn or low-accuracy GPS).")
-        if e["manual_review"]:
+        if e.get("manual_review"):
             measures.append(
                 f"{code}: manually reviewed and cleared by {e['manual_review']['reviewer']} "
                 f"({e['manual_review']['reason']}).")
     return measures
 
 
-def build_dds(batch: dict, geolocations: dict | None = None) -> dict:
+def build_dds(batch: dict, geolocations: dict | None = None, base_url: str = "") -> dict:
     """`batch` is the minimized dict returned by main.batch_out(public=True);
-    `geolocations` maps farm_code -> EUDR geolocation feature from main.geolocation_feature."""
+    `geolocations` maps farm_code -> EUDR geolocation feature from main.geolocation_feature.
+    `base_url` makes the attachment links absolute so the file is useful outside this API."""
     geolocations = geolocations or {}
+    base_url = base_url.rstrip("/")
     entries = [_farm_entry(c, geolocations.get(c["farm"]["code"]))
                for c in batch["contributions"] if c.get("farm")]
     regions = sorted({e["region"] for e in entries})
-    villages = sorted({e["village"] for e in entries if e["village"]})
     levels = [e["screening"]["risk_level"] for e in entries]
     overall = _worst_level(levels)
     high_risk = [e["farm_code"] for e in entries if e["screening"]["risk_level"] == "High"]
@@ -131,7 +142,6 @@ def build_dds(batch: dict, geolocations: dict | None = None) -> dict:
         "production": {
             "country": _country(regions),
             "regions": regions,
-            "villages": villages,
             "farms": entries,
         },
         "risk_assessment": {
@@ -148,13 +158,13 @@ def build_dds(batch: dict, geolocations: dict | None = None) -> dict:
             "batch": batch["code"],
             "buyer": batch["buyer"],
             "created_at": batch["created_at"],
-            "created_by": batch["created_by"],
+            # no created_by: a staff member's name is exactly what data minimization removes
         },
         "attachments": [
             {"type": "shipment_compliance_package",
-             "url": f"/api/batches/{batch['id']}/report.pdf"},
+             "url": f"{base_url}/api/batches/{batch['id']}/report.pdf"},
             *[{"type": "farm_evidence", "farm_code": e["farm_code"],
-                "url": f"/api/farms/{e['farm_id']}/report.pdf"}
+                "url": f"{base_url}/api/farms/{e['farm_id']}/report.pdf"}
               for e in entries],
         ],
         "disclaimer": ("Demonstration due-diligence statement generated from screening data. "

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api.js'
 import RiskBadge from './RiskBadge.jsx'
+import { getUser } from '../App.jsx'
 
 const POLL_MS = 2000
 
@@ -11,7 +12,8 @@ const POLL_MS = 2000
  * pool, so closing this modal never cancels it -- results are idempotent.
  */
 export default function BulkVerifyModal({ farms, onClose, onDone }) {
-  const [selected, setSelected] = useState(() => farms.map((f) => f.id))
+  // Already-screened farms stay selectable (re-screening), just not pre-checked (PR #20 review).
+  const [selected, setSelected] = useState(() => farms.filter((f) => !f.risk_level).map((f) => f.id))
   const [job, setJob] = useState(null)
   const [starting, setStarting] = useState(false)
   const [error, setError] = useState('')
@@ -24,7 +26,8 @@ export default function BulkVerifyModal({ farms, onClose, onDone }) {
     setError('')
     setStarting(true)
     try {
-      setJob(await api.startBulkVerify(selected))
+      const user = getUser()
+      setJob(await api.startBulkVerify(selected, user?.name || '', user?.role || ''))
     } catch (e) {
       setError(e.message)
     } finally {
@@ -80,12 +83,15 @@ export default function BulkVerifyModal({ farms, onClose, onDone }) {
                   <input type="checkbox" checked={selected.includes(f.id)} onChange={() => toggle(f.id)} />
                   <span className="bulk-name">
                     <b>{f.name}</b>
-                    <small className="muted">{f.code} · {f.area_ha} ha</small>
+                    <small className="muted">
+                      {f.code} · {f.area_ha} ha
+                      {f.risk_level ? ' · already screened — re-running replaces the current verdict' : ''}
+                    </small>
                   </span>
                   <RiskBadge level={f.risk_level} />
                 </label>
               ))}
-              {!farms.length && <p className="small muted">Every farm has already been screened.</p>}
+              {!farms.length && <p className="small muted">No farms registered yet.</p>}
             </div>
             {error && <p className="small bad-text">{error}</p>}
             <div className="row between" style={{ marginTop: 12 }}>

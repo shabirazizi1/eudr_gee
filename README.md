@@ -157,7 +157,7 @@ throwaway temporary database and mocks the Earth Engine call.
 
 | Method & path | What it does |
 | --- | --- |
-| `POST /api/bulk/verify` | Start a background screening job for a list of farm IDs |
+| `POST /api/bulk/verify` | Start a background screening job for a list of farm IDs — Brand admin only (`by_role: "admin"`, otherwise 403); already-screened farms can be re-run |
 | `GET /api/bulk/{job_id}` | Job status, progress, ETA and per-farm results |
 | `GET /api/bulk/{job_id}/summary` | Roll-up: counts per risk level plus flagged farms |
 | `GET /api/batches/{id}/dds` | EUDR due-diligence statement as JSON (Approved batches only) |
@@ -169,6 +169,7 @@ backend/app/
   main.py          API routes
   models.py        database tables (Farm, Batch, Bag, Review, BatchEvent, ...)
   bulk_verify.py   background bulk screening (thread pool, in-process job progress)
+  screening.py     shared farm-screening logic used by /verify and by bulk jobs
   dds.py           builds the EUDR due-diligence statement (JSON) from a batch
   gee_service.py   Earth Engine satellite screening
   scoring.py       turns screening results into a 0-100 risk score

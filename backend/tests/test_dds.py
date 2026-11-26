@@ -36,7 +36,7 @@ def test_dds_export_contains_statement_fields(client, mock_screen):
     assert doc["commodity"]["quantity"]["bags"] == 4
     assert doc["commodity"]["quantity"]["net_weight_kg"] == 240.0
     assert doc["production"]["country"] == "Ghana"
-    assert doc["production"]["villages"] == []  # public payload drops the village (issue #7)
+    assert "villages" not in doc["production"]  # always-empty fields are omitted, not padded
 
     farm_entry = doc["production"]["farms"][0]
     assert farm_entry["geolocation"]["type"] == "Polygon"
@@ -49,6 +49,52 @@ def test_dds_export_contains_statement_fields(client, mock_screen):
     assert doc["risk_assessment"]["high_risk_farms"] == []
     assert len(doc["integrity"]["sha256"]) == 64
     assert len(doc["attachments"]) == 2
+    assert all(a["url"].startswith("http") for a in doc["attachments"])  # absolute links
+    assert "created_by" not in doc["supply_chain"]  # staff names are minimised too
+    assert "manual_review" not in farm_entry  # no review happened -> no null placeholder
+
+
+def test_dds_pending_batch_returns_400(client, mock_screen):
+    """Pending approval means no bags exist yet, so there is nothing to make a statement about."""
+    farm = client.post("/api/farms", json=FARM).json()
+    client.post(f"/api/farms/{farm['id']}/verify")
+    b = client.post("/api/batches", json={
+        "contributions": [{"farm_id": farm["id"], "bags": 100, "kg_per_bag": 64.0}],
+        "justification_note": "Second harvest agreed with the cooperative",
+    })
+    assert b.status_code in (200, 201), b.text
+    assert b.json()["status"] == "Pending approval"
+    assert client.get(f"/api/batches/{b.json()['id']}/dds").status_code == 400
+
+
+def test_dds_reports_the_frozen_verification_not_the_latest_rerun(client, mock_screen):
+    """PR #20 review: a re-run after batching must not change the statement's score."""
+    mock_screen(loss_ha=0.3)  # real loss -> Under review, then cleared by the Brand admin
+    farm = client.post("/api/farms", json=FARM).json()
+    assert client.post(f"/api/farms/{farm['id']}/verify").json()["status"] == "Under review"
+    rr = client.post(f"/api/farms/{farm['id']}/review", json={
+        "decision": "clear", "reason": "Cloud cover", "note": "Checked on site",
+        "reviewer_name": "Nadia Owusu"})
+    assert rr.status_code == 200, rr.text
+
+    frozen = client.get(f"/api/farms/{farm['id']}").json()
+    frozen_level, frozen_score = frozen["risk_level"], frozen["risk_score"]
+    assert frozen_level != "Low"
+
+    batch = client.post("/api/batches", json={
+        "contributions": [{"farm_id": farm["id"], "bags": 4, "kg_per_bag": 60.0}]}).json()
+    assert batch["status"] == "Approved"
+
+    # A later re-run comes back clean: the farm is still batchable, so the export succeeds...
+    mock_screen(loss_ha=0.0)
+    assert client.post(f"/api/farms/{farm['id']}/verify").json()["status"] == "Verified"
+    assert client.get(f"/api/farms/{farm['id']}").json()["risk_level"] == "Low"
+
+    doc = client.get(f"/api/batches/{batch['id']}/dds").json()
+    entry = doc["production"]["farms"][0]
+    # ...but the statement keeps the score/level frozen at batching time.
+    assert entry["screening"]["risk_level"] == frozen_level
+    assert entry["screening"]["risk_score"] == frozen_score
 
 
 def test_dds_is_blocked_when_a_farm_regresses(client, mock_screen):

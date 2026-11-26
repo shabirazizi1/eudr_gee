@@ -1,4 +1,5 @@
 """Small geometry helpers (no GIS dependencies needed)."""
+import json
 import math
 
 R = 6378137.0  # WGS84 equatorial radius (m), same as turf.js
@@ -61,6 +62,17 @@ def self_intersects(geojson: dict) -> bool:
             if _segments_cross(*segs[i], *segs[j]):
                 return True
     return False
+
+
+def display_geometry(geometry_str: str, declared_area_ha) -> dict:
+    """The stored geometry is a true GeoJSON Point for a declared-area capture (issue #5) --
+    the due-diligence export needs that real Point. Everything else that expects a Polygon shape
+    (maps, PDFs, Earth Engine screening) gets this buffered-circle stand-in instead."""
+    raw = json.loads(geometry_str)
+    if raw.get("type") == "Point":
+        lon, lat = raw["coordinates"]
+        return point_buffer_polygon(lon, lat, declared_area_ha or 0)
+    return raw
 
 
 def validate(geojson: dict) -> list[str]:
