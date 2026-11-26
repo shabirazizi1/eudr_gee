@@ -185,17 +185,26 @@ def _legend_row(small_style, date_label: str, source="esri", widths=(32 * mm, 48
     return legend
 
 
+def _capture_label(f: dict) -> str:
+    """Issue #5: a declared-area Point capture (EUDR <= 4 ha) is labelled "Point (declared X
+    ha)" everywhere a capture method is shown -- the Result page, the dashboard, and both PDFs."""
+    method = f.get("capture_method")
+    if method == "gps_point":
+        return f"Point (declared {f.get('declared_area_ha') or f.get('area_ha') or 0:.2f} ha)"
+    return "GPS walk" if method == "gps_walk" else "Drawn on map"
+
+
 def _facts_table(farm: dict, res: dict, col_widths=(40 * mm, 60 * mm)) -> Table:
     """`farm` is a dict with the Farm model's fields (ORM `.model_dump()` or the API's farm_out()).
     NDVI values stay sourced from Sentinel-2 regardless of which imagery the map above uses."""
-    if farm.get("capture_method") == "gps_walk" and farm.get("gps_accuracy_m") is not None:
+    if farm.get("capture_method") in ("gps_walk", "gps_point") and farm.get("gps_accuracy_m") is not None:
         accuracy_label = f"±{farm['gps_accuracy_m']:.1f} m avg"
         if farm.get("flagged_points"):
             accuracy_label += f" · {farm['flagged_points']} flagged point(s)"
     else:
         accuracy_label = "–"
     facts = [
-        ["Capture method", "GPS walk" if farm.get("capture_method") == "gps_walk" else "Drawn on map"],
+        ["Capture method", _capture_label(farm)],
         ["GPS accuracy", accuracy_label],
         ["Area", f"{farm['area_ha']:.2f} ha"],
         ["Perimeter", f"{farm['perimeter_m']:.0f} m"],
@@ -267,7 +276,11 @@ def _boundary_table_compact(geo: dict, max_rows_per_group=6, max_groups=3,
 
 # ---------------------------------------------------------------- single-farm evidence report
 
-def build_pdf(farm, verification, reviews=None) -> bytes:
+def build_pdf(farm, verification, reviews=None, geometry=None, boundary_version_no=None,
+              facts_override=None) -> bytes:
+    """`geometry`/`facts_override` (issue #4) let the caller render the boundary version the
+    verification was actually run against, rather than the farm's current one, which can differ
+    after a remap that hasn't been re-verified yet. Both default to the farm's current state."""
     res = json.loads(verification.result_json)
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=A4, title=f"Evidence report {farm.code}",
@@ -281,12 +294,15 @@ def build_pdf(farm, verification, reviews=None) -> bytes:
     caption = small.clone("caption", fontSize=7, leading=9)
     els = []
 
+    # Buyer-facing (same as the batch report): farmer initials, no village (data minimization).
+    farmer_initials = "".join(w[0] for w in farm.farmer_name.split() if w).upper() or "–"
     els.append(Paragraph("Deforestation-Free Evidence Report", h1))
     els.append(Paragraph(
-        f"{farm.name} · {farm.code} · {farm.farmer_name} · {_place(farm.village, farm.region)}", body))
+        f"{farm.name} · {farm.code} · {farmer_initials} · {_place('', farm.region)}", body))
+    boundary_label = f" · Boundary v{boundary_version_no}" if boundary_version_no else ""
     els.append(Paragraph(
         f"Run {verification.run_id} · {verification.created_at:%d %b %Y %H:%M} UTC · "
-        f"Data source: {verification.source.upper()}", small))
+        f"Data source: {verification.source.upper()}{boundary_label}", small))
     els.append(Spacer(1, 5))
 
     color = LEVEL_COLORS.get(verification.level, "#333333")
@@ -301,8 +317,9 @@ def build_pdf(farm, verification, reviews=None) -> bytes:
             "No post-2020 tree-cover loss, protected-area overlap or vegetation decline detected.", body))
     els.append(Spacer(1, 5))
 
-    geo = json.loads(farm.geometry)
-    t = _facts_table(farm.model_dump(), res, col_widths=(38 * mm, 44 * mm))
+    geo = geometry if geometry is not None else json.loads(farm.geometry)
+    facts_farm = {**farm.model_dump(), **(facts_override or {})}
+    t = _facts_table(facts_farm, res, col_widths=(38 * mm, 44 * mm))
     gallery, has_real_map, legend_source = _map_pair_flowable(geo, caption, cell_w=42 * mm, max_h=56 * mm)
     els.append(Table([[gallery, t]], colWidths=[86 * mm, 84 * mm]))
     if has_real_map:
@@ -406,6 +423,14 @@ def _contrib_notes(f: dict) -> str:
     return f"Cleared: {lr['reason']} — {lr.get('reviewer_name') or 'reviewer n/a'} ({lr['created_at'][:10]})"
 
 
+def _override_note(c: dict) -> str:
+    """Issue #6: 'Mass-balance override: reason, by, date' wherever a contribution is shown."""
+    o = c.get("override")
+    if not o:
+        return ""
+    return f"Mass-balance override: {o['reason']} — {o.get('by') or 'n/a'} ({(o.get('at') or '')[:10]})"
+
+
 def build_batch_pdf(batch, data: dict) -> bytes:
     """`data` is the batch_out() dict: contributions carry the farm_out() payload for each farm
     (including `reviews`/`latest_review`), so the per-farm appendix can reuse the single-farm
@@ -443,6 +468,7 @@ def build_batch_pdf(batch, data: dict) -> bytes:
     # ---- Compliance statement -------------------------------------------------
     passed = sum(1 for f in farms if f.get("status") in ("Verified", "Verified (manual review)"))
     manually_cleared = sum(1 for f in farms if f.get("status") == "Verified (manual review)")
+    overridden = sum(1 for c in contributions if c.get("override"))
     statement = (
         f"All {passed} of {len(farms)} contributing farms passed satellite screening for "
         f"tree-cover loss after 31 Dec {config.CUTOFF_YEAR} as of {today_label}."
@@ -451,6 +477,9 @@ def build_batch_pdf(batch, data: dict) -> bytes:
         verb = "was" if manually_cleared == 1 else "were"
         plural = "" if manually_cleared == 1 else "s"
         statement += f" {manually_cleared} farm{plural} {verb} cleared by manual review."
+    if overridden:
+        plural = "" if overridden == 1 else "s"
+        statement += f" {overridden} contribution{plural} required an admin-approved mass-balance override."
     els.append(Paragraph(f'<font color="#2f5d34"><b>{statement}</b></font>', h3))
     els.append(Spacer(1, 10))
 
@@ -466,6 +495,8 @@ def build_batch_pdf(batch, data: dict) -> bytes:
         ["Cutoff date", f"31 Dec {config.CUTOFF_YEAR}"],
         ["Buyer", batch.buyer],
         ["Exporter", EXPORTER],
+        ["EUDR geolocation data", "Full due-diligence dataset available as GeoJSON -- see "
+                                  "'Export EUDR geolocation' on the batch's traceability page."],
     ]
     dt = Table(details, colWidths=[42 * mm, 86 * mm])
     dt.setStyle(TableStyle([("FONTSIZE", (0, 0), (-1, -1), 9),
@@ -492,14 +523,17 @@ def build_batch_pdf(batch, data: dict) -> bytes:
         if not f:
             continue
         v = f.get("verification")
-        capture = "GPS walk" if f.get("capture_method") == "gps_walk" else "Drawn on map"
+        capture = _capture_label(f)
         risk = f"{v['score']} ({v['level']})" if v else "Not screened"
         run = f"{v['run_id']} · {v['created_at'][:10]}" if v else "–"
+        if f.get("boundary_version"):
+            run += f" · Boundary v{f['boundary_version']}"
+        notes = " / ".join(n for n in (_contrib_notes(f), _override_note(c)) if n)
         rows.append([
             Paragraph(f["code"], cell), Paragraph(f["farmer_name"], cell),
             Paragraph(f"{f['area_ha']:.2f} ha", cell), Paragraph(risk, cell),
             Paragraph(capture, cell), Paragraph(f["status"], cell),
-            Paragraph(run, cell), Paragraph(_contrib_notes(f), cell),
+            Paragraph(run, cell), Paragraph(notes, cell),
         ])
     ft = Table(rows, colWidths=[18 * mm, 20 * mm, 12 * mm, 16 * mm, 20 * mm, 20 * mm, 26 * mm, 38 * mm])
     ft.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, 0), GREEN),
@@ -509,6 +543,32 @@ def build_batch_pdf(batch, data: dict) -> bytes:
                             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
                             ("GRID", (0, 0), (-1, -1), 0.25, colors.lightgrey)]))
     els.append(ft)
+
+    # ---- Approval history (issue #15: only present for batches that went through the mass-balance
+    # approval workflow -- a batch created directly within capacity has no events) ----------------
+    events = data.get("events") or []
+    if events:
+        els.append(Spacer(1, 10))
+        els.append(Paragraph("Approval history", h2))
+        event_labels = {"submitted": "Submitted for approval", "approved": "Approved",
+                        "rejected": "Rejected", "cancelled": "Cancelled"}
+        head_white = head.clone("bcellheadwhite2", textColor=colors.white)
+        erows = [[Paragraph(h, head_white) for h in ("Event", "By", "Date", "Note")]]
+        for e in events:
+            erows.append([
+                Paragraph(event_labels.get(e["event"], e["event"]), cell),
+                Paragraph(e["by"] or "–", cell),
+                Paragraph(e["created_at"][:16].replace("T", " "), cell),
+                Paragraph(e["note"] or "–", cell),
+            ])
+        et = Table(erows, colWidths=[32 * mm, 32 * mm, 30 * mm, 76 * mm])
+        et.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, 0), GREEN),
+                                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                                ("FONTSIZE", (0, 0), (-1, 0), 8),
+                                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                                ("GRID", (0, 0), (-1, -1), 0.25, colors.lightgrey)]))
+        els.append(et)
 
     # ---- Page 2: satellite overview (kept together on its own page) -------------------------------------------------
     overview_img, is_real_overview, overview_source = _batch_map_flowable(farms)
@@ -529,8 +589,10 @@ def build_batch_pdf(batch, data: dict) -> bytes:
             continue
         els.append(PageBreak())
         els.append(Paragraph(f"Appendix · {f['name']}", h1))
+        boundary_label = f" · Boundary v{f['boundary_version']}" if f.get("boundary_version") else ""
         els.append(Paragraph(
-            f"{f['code']} · {f['farmer_name']} · {_place(f.get('village', ''), f.get('region', ''))}", body))
+            f"{f['code']} · {f['farmer_name']} · {_place(f.get('village', ''), f.get('region', ''))}"
+            f"{boundary_label}", body))
 
         res = f.get("verification") or {}
         if res:
@@ -540,6 +602,8 @@ def build_batch_pdf(batch, data: dict) -> bytes:
                 f" · Status: {f['status']}", h3))
         else:
             els.append(Paragraph(f"Status: {f['status']}", h3))
+        if c.get("override"):
+            els.append(Paragraph(f'<font color="#b8860b">{_override_note(c)}</font>', small))
         els.append(Spacer(1, 5))
 
         appendix_facts = _facts_table(f, res, col_widths=(40 * mm, 48 * mm))

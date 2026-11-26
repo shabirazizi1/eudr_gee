@@ -76,6 +76,14 @@ export default function Dashboard({ listOnly = false }) {
                 {summary.under_review} under review · {summary.not_screened} not screened · {summary.needs_field_audit} needs field audit
                 · {summary.reviewed} reviewed · {summary.excluded} excluded
               </small></div>
+            <div className="card pad"><small className="muted">Mass-balance overrides</small><b>{summary.mass_balance_overrides}</b></div>
+            <div className="card pad">
+              <small className="muted">Pending approvals</small>
+              <b>{summary.pending_approvals}</b>
+              {summary.pending_approvals > 0 && (
+                <div><Link className="link-btn small" to="/batches">Review queue →</Link></div>
+              )}
+            </div>
           </div>
           <div className="card pad">
             <div className="card-head tight"><b>Satellite risk distribution</b><small className="muted">{summary.screened} screened farms</small></div>
@@ -124,7 +132,9 @@ export default function Dashboard({ listOnly = false }) {
                   {f.status === 'Verified (manual review)' && <div><span className="pill ok small">✓ Manually cleared</span></div>}
                   {f.status === 'Excluded' && <div><span className="pill warn small">⛔ Excluded</span></div>}
                 </td>
-                <td data-label="Area">{f.area_ha} ha</td>
+                <td data-label="Area">
+                  {f.capture_method === 'gps_point' ? `Point (declared ${f.area_ha.toFixed(2)} ha)` : `${f.area_ha} ha`}
+                </td>
                 <td data-label="Risk"><RiskBadge level={f.risk_level} /></td>
                 <td data-label="Score">{f.risk_score ?? '–'}</td>
                 <td data-label="Status">{f.status}</td>

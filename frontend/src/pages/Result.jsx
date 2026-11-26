@@ -9,6 +9,13 @@ import RiskBadge from '../components/RiskBadge.jsx'
 // HLR-05 / DEL-02 – admin review / dispute workflow for farms Under review
 const REVIEW_REASONS = ['Cloud cover', 'Natural clearing', 'Replanting of existing cocoa', 'Boundary error', 'Other']
 
+// Issue #5: a declared-area point capture (EUDR <= 4 ha) is labelled "Point (declared X ha)"
+// everywhere a capture method is shown.
+function captureLabel(f) {
+  if (f.capture_method === 'gps_point') return `Point (declared ${(f.declared_area_ha ?? f.area_ha ?? 0).toFixed(2)} ha)`
+  return f.capture_method === 'gps_walk' ? 'GPS walk' : 'Drawn on map'
+}
+
 function ReviewPanel({ farm, isAdmin, onReviewed }) {
   const [decision, setDecision] = useState(null) // 'clear' | 'confirm' | null
   const [reason, setReason] = useState(REVIEW_REASONS[0])
@@ -88,6 +95,52 @@ function ReviewHistory({ reviews }) {
   )
 }
 
+// Boundary history (issue #4): each version's date, method, accuracy, area, captured by, and
+// a small map with older boundaries dashed grey and the current one in yellow.
+function BoundaryHistory({ farm }) {
+  const [versions, setVersions] = useState(null)
+
+  useEffect(() => { api.boundaryVersions(farm.id).then(setVersions).catch(() => setVersions([])) }, [farm.id])
+
+  if (!versions?.length) return null
+  const current = versions[versions.length - 1]
+  const older = versions.slice(0, -1)
+
+  return (
+    <section className="card pad">
+      <div className="card-head tight"><b>Boundary history</b>
+        <small className="muted">v{current.version_no} current · {versions.length} version(s)</small>
+      </div>
+      <div className="grid-result" style={{ marginTop: 10 }}>
+        <FarmMap
+          geometry={current.geometry}
+          boundaryStyle={{ color: '#ffe034', weight: 3, fillColor: '#ffe034', fillOpacity: 0.08 }}
+          extraLayers={older.map((v) => ({
+            geometry: v.geometry,
+            style: { color: '#9a9a9a', weight: 2, dashArray: '6 6', fillOpacity: 0 },
+          }))}
+          height={240}
+        />
+        <div className="stack" style={{ gap: 10 }}>
+          {versions.slice().reverse().map((v) => (
+            <div key={v.version_no} style={{ borderBottom: '1px dashed var(--line)', paddingBottom: 8 }}>
+              <div className="row between">
+                <b>Boundary v{v.version_no}{v.version_no === current.version_no ? ' (current)' : ''}</b>
+                <span className="small muted">{new Date(v.created_at).toLocaleDateString()}</span>
+              </div>
+              <div className="small">
+                {captureLabel(v)}
+                {v.capture_method !== 'drawn' && v.gps_accuracy_m != null ? ` · ±${v.gps_accuracy_m.toFixed(1)} m` : ''}
+                {v.capture_method !== 'gps_point' ? ` · ${v.area_ha.toFixed(2)} ha` : ''}{v.captured_by ? ` · ${v.captured_by}` : ''}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
+  )
+}
+
 export default function Result() {
   const { id } = useParams()
   const [farm, setFarm] = useState(null)
@@ -114,10 +167,12 @@ export default function Result() {
           <h1>A clearer view of the farm.</h1>
           <p className="muted">
             {farm.name} · {farm.code} · {farm.farmer_name} · {farm.village || farm.region}
+            {farm.boundary_version && <> · Boundary v{farm.boundary_version}</>}
             {farm.needs_field_audit && <> · <span className="pill warn small">⚠ Needs field audit</span></>}
           </p>
         </div>
         <div className="row">
+          <Link className="btn" to={`/farms/${farm.id}/remap`}>⬠ Remap boundary</Link>
           <button className="btn" onClick={run} disabled={busy}>{busy ? 'Screening… (10–40 s)' : v ? '↻ Re-run check' : 'Run satellite check'}</button>
           {v && <a className="btn primary" href={api.reportUrl(farm.id)}>⤓ Export evidence</a>}
         </div>
@@ -169,9 +224,9 @@ export default function Result() {
               <div className="scale"><i style={{ left: `${v.score}%` }} /></div>
               <div className="row between small muted"><span>0 · Lower risk</span><span>100 · Higher risk</span></div>
               <ul className="facts">
-                <li><span>Capture method</span><b>{farm.capture_method === 'gps_walk' ? 'GPS walk' : 'Drawn on map'}</b></li>
+                <li><span>Capture method</span><b>{captureLabel(farm)}</b></li>
                 <li><span>GPS accuracy</span><b>
-                  {farm.capture_method === 'gps_walk' && farm.gps_accuracy_m != null
+                  {farm.capture_method !== 'drawn' && farm.gps_accuracy_m != null
                     ? `±${farm.gps_accuracy_m.toFixed(1)} m avg${farm.flagged_points ? ` · ${farm.flagged_points} flagged` : ''}`
                     : '–'}
                 </b></li>
@@ -197,6 +252,7 @@ export default function Result() {
         <ReviewPanel farm={farm} isAdmin={isAdmin} onReviewed={setFarm} />
       )}
       {farm.reviews?.length > 0 && <ReviewHistory reviews={farm.reviews} />}
+      <BoundaryHistory farm={farm} />
 
       {v && (
         <section className="card">

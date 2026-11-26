@@ -16,7 +16,7 @@ from sqlmodel import Session, select
 
 from . import gee_service, geo, scoring
 from .db import engine
-from .models import Farm, Verification
+from .models import BoundaryVersion, Farm, Verification
 
 WORKERS = 3                  # GEE quota is finite -- don't fan out harder than this
 JOB_TTL_SECONDS = 3600 * 6   # keep finished jobs in memory for 6 h, then drop
@@ -80,8 +80,13 @@ def _run_one(job_id: str, farm_id: int, farm_code: str):
             result.update({"flags": scored["flags"] + geo.sanity_flags(farm.area_ha),
                            "breakdown": scored["breakdown"]})
 
+            current_version = s.exec(
+                select(BoundaryVersion).where(BoundaryVersion.farm_id == farm.id)
+                .order_by(BoundaryVersion.version_no.desc())
+            ).first()
             verification = Verification(
                 farm_id=farm.id,
+                boundary_version_id=current_version.id if current_version else None,
                 run_id=f"GEE-{farm.code.split('-')[1]}-{uuid.uuid4().hex[:4].upper()}",
                 source=result["source"],
                 score=scored["score"],

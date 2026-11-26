@@ -30,22 +30,25 @@ def _country(regions: list[str]) -> str:
     return "Unknown"
 
 
-def _farm_entry(contribution: dict) -> dict:
+def _farm_entry(contribution: dict, geolocation: dict | None = None) -> dict:
     farm = contribution["farm"]
     verification = farm.get("verification") or {}
     review = farm.get("latest_review")
     screened_at = farm.get("last_screened")
     if hasattr(screened_at, "isoformat"):
         screened_at = screened_at.isoformat()
+    # The public payload already drops village/audit flags; the geolocation feature carries the
+    # true Point/Polygon (batch_out's display geometry may be a buffered circle for points).
+    properties = (geolocation or {}).get("properties", {})
     return {
         "farm_id": farm["id"],
         "farm_code": farm["code"],
         "farm_name": farm["name"],
         "producer": farm["farmer_name"],
-        "village": farm["village"],
+        "village": farm.get("village", ""),
         "region": farm["region"],
-        "area_ha": farm["area_ha"],
-        "geolocation": farm["geometry"],
+        "area_ha": properties.get("area_ha", farm["area_ha"]),
+        "geolocation": (geolocation or {}).get("geometry", farm["geometry"]),
         "screening": {
             "status": farm["status"],
             "risk_level": farm["risk_level"],
@@ -54,7 +57,7 @@ def _farm_entry(contribution: dict) -> dict:
             "run_id": verification.get("run_id"),
             "source": verification.get("source"),
             "flags": verification.get("flags", []),
-            "needs_field_audit": farm["needs_field_audit"],
+            "needs_field_audit": farm.get("needs_field_audit", False),
         },
         "manual_review": {
             "decision": review["decision"],
@@ -87,9 +90,12 @@ def _mitigation(entries: list[dict]) -> list[str]:
     return measures
 
 
-def build_dds(batch: dict) -> dict:
-    """`batch` is the dict returned by main.batch_out()."""
-    entries = [_farm_entry(c) for c in batch["contributions"] if c.get("farm")]
+def build_dds(batch: dict, geolocations: dict | None = None) -> dict:
+    """`batch` is the minimized dict returned by main.batch_out(public=True);
+    `geolocations` maps farm_code -> EUDR geolocation feature from main.geolocation_feature."""
+    geolocations = geolocations or {}
+    entries = [_farm_entry(c, geolocations.get(c["farm"]["code"]))
+               for c in batch["contributions"] if c.get("farm")]
     regions = sorted({e["region"] for e in entries})
     villages = sorted({e["village"] for e in entries if e["village"]})
     levels = [e["screening"]["risk_level"] for e in entries]

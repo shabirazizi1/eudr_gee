@@ -15,6 +15,8 @@ def _farm(name, **overrides):
         "capture_method": "gps_walk",
         "gps_accuracy_m": 4.0,
         "flagged_points": 0,
+        "consent_given": True,
+        "consent_date": "2026-10-01",
     }
     body.update(overrides)
     return body

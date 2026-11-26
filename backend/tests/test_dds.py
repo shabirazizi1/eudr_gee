@@ -8,6 +8,8 @@ FARM = {
     "gps_accuracy_m": 4.3,
     "flagged_points": 0,
     "geometry": make_polygon(),
+    "consent_given": True,
+    "consent_date": "2026-10-01",
 }
 
 
@@ -34,12 +36,14 @@ def test_dds_export_contains_statement_fields(client, mock_screen):
     assert doc["commodity"]["quantity"]["bags"] == 4
     assert doc["commodity"]["quantity"]["net_weight_kg"] == 240.0
     assert doc["production"]["country"] == "Ghana"
-    assert doc["production"]["villages"] == ["Asankrangwa"]
+    assert doc["production"]["villages"] == []  # public payload drops the village (issue #7)
 
     farm_entry = doc["production"]["farms"][0]
     assert farm_entry["geolocation"]["type"] == "Polygon"
+    assert farm_entry["producer"] == "AM"  # initials, not the farmer's full name
     assert farm_entry["screening"]["risk_level"] == "Low"
     assert farm_entry["screening"]["run_id"]
+    assert "Ama Mensah" not in r.text
 
     assert doc["risk_assessment"]["overall_risk_level"] == "Low"
     assert doc["risk_assessment"]["high_risk_farms"] == []
