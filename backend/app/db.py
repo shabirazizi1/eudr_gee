@@ -2,7 +2,8 @@ from sqlmodel import Session, SQLModel, create_engine
 
 from . import config
 
-engine = create_engine(config.DB_URL, connect_args={"check_same_thread": False})
+# timeout: bulk screening writes from 3 worker threads, so wait longer than SQLite's 5 s default
+engine = create_engine(config.DB_URL, connect_args={"check_same_thread": False, "timeout": 30})
 
 
 def init_db():

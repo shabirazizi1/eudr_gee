@@ -10,8 +10,9 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
-from . import config, geo, gee_service, scoring
+from . import bulk_verify, config, geo, gee_service, scoring
 from .db import get_session, init_db
+from .dds import build_dds
 from .models import Bag, Batch, BatchContribution, Farm, Review, Verification
 from .report import build_bag_labels_pdf, build_batch_pdf, build_pdf
 
@@ -396,6 +397,25 @@ def batch_report(batch_id: int, session: Session = Depends(get_session)):
         "Content-Disposition": f'attachment; filename="shipment_{batch.code}.pdf"'})
 
 
+@app.get("/api/batches/{batch_id}/dds")
+def batch_dds(batch_id: int, session: Session = Depends(get_session)):
+    """EUDR due-diligence statement as a TRACES-style JSON download. Refuses to issue a
+    statement while any contributing farm has regressed out of a batchable status."""
+    batch = session.get(Batch, batch_id)
+    if not batch:
+        raise HTTPException(404, "Batch not found")
+    data = batch_out(session, batch)
+    blocked = [c["farm"]["name"] for c in data["contributions"]
+               if c["farm"] and c["farm"]["status"] not in BATCHABLE_STATUSES]
+    if blocked:
+        raise HTTPException(409, "A DDS cannot be issued while these farms are not Verified: "
+                            + ", ".join(blocked))
+    payload = build_dds(data)
+    body = json.dumps(payload, indent=2, ensure_ascii=False)
+    return Response(body, media_type="application/json", headers={
+        "Content-Disposition": f'attachment; filename="DDS_{batch.code}.json"'})
+
+
 @app.get("/api/batches/{batch_id}/bag_labels.pdf")
 def batch_bag_labels(batch_id: int, session: Session = Depends(get_session)):
     batch = session.get(Batch, batch_id)
@@ -425,3 +445,34 @@ def get_bag(bag_id: str, session: Session = Depends(get_session)):
     if not bag:
         raise HTTPException(404, "Bag not found")
     return bag_out(session, bag)
+
+
+# ---------------------------------------------------------------- bulk screening (F2.b)
+
+class BulkStartBody(BaseModel):
+    farm_ids: list[int]
+    triggered_by: str = ""
+
+
+@app.post("/api/bulk/verify")
+def start_bulk_verify(body: BulkStartBody):
+    try:
+        return bulk_verify.start_job(body.farm_ids, body.triggered_by)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+
+
+@app.get("/api/bulk/{job_id}")
+def get_bulk_job(job_id: str):
+    job = bulk_verify.get_job(job_id)
+    if job is None:
+        raise HTTPException(404, "Bulk job not found")
+    return job
+
+
+@app.get("/api/bulk/{job_id}/summary")
+def get_bulk_summary(job_id: str):
+    job = bulk_verify.get_job(job_id)
+    if job is None:
+        raise HTTPException(404, "Bulk job not found")
+    return bulk_verify.summary_of(job)

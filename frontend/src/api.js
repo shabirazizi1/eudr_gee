@@ -33,8 +33,16 @@ export const api = {
   batch: (id) => request(`/batches/${id}`),
   createBatch: (body) => request('/batches', { method: 'POST', body: JSON.stringify(body) }),
   batchReportUrl: (id) => `/api/batches/${id}/report.pdf`,
+  ddsUrl: (id) => `/api/batches/${id}/dds`,
   bagLabelsUrl: (id) => `/api/batches/${id}/bag_labels.pdf`,
   bag: (bagId) => request(`/bags/${bagId}`),
+  // ---- bulk verify (F2.b) ----
+  startBulkVerify: (farmIds, triggeredBy = '') => request('/bulk/verify', {
+    method: 'POST',
+    body: JSON.stringify({ farm_ids: farmIds, triggered_by: triggeredBy }),
+  }),
+  bulkJob: (jobId) => request(`/bulk/${jobId}`),
+  bulkSummary: (jobId) => request(`/bulk/${jobId}/summary`),
 }
 
 // ---- offline outbox -------------------------------------------------------
