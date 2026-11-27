@@ -1,7 +1,7 @@
 # eudr_gee – project notes for Claude
 
 Solo MVP for a Mahidol Master's "Software Development" class. Demo is recorded on localhost.
-**Deadline: Friday 6 Nov 2026.** Keep changes small and demo-focused; don't refactor working code.
+Keep changes small; main is protected; every change goes through a PR with green CI.
 
 ## What it is
 Deforestation-free cocoa traceability platform (EUDR). Cutoff date = **31 Dec 2020**.

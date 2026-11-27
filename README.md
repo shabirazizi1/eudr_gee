@@ -57,7 +57,7 @@ queue: clear a false positive or confirm and exclude it, permanently on record. 
 portfolio KPIs and risk distribution, plus a queue of batches awaiting approval. An **overview
 map** colours every farm by risk and follows the same filter as the table, and **bulk screening**
 checks many unscreened farms in one background job — with live progress, ETA and per-farm results
-— instead of clicking each farm one at a time.**
+— instead of clicking each farm one at a time.
 
 **Warehouse operator** — bundles verified farms into a shipment batch for a buyer. Each farm has
 a maximum it can ship per season (area × estimated yield); a batch that would exceed it is
@@ -99,6 +99,7 @@ authentication is on the roadmap.)
 | --- | --- | :---: | :---: | :---: |
 | Register a farm | `POST /api/farms` | ✅ | ✅ | ❌ |
 | Run a satellite check | `POST /api/farms/{id}/verify` | ✅ | ✅ | ❌ |
+| Bulk-screen many farms | POST /api/bulk/verify | ❌ | ✅ | ❌ |
 | Remap a boundary | `POST /api/farms/{id}/remap` | ✅ | ✅ | ❌ |
 | Review a flagged farm (clear / confirm) | `POST /api/farms/{id}/review` | ❌ | ✅ | ❌ |
 | View a consent photo | `GET /api/farms/{id}/consent_photo` | ❌ | ✅ | ❌ |
@@ -111,6 +112,7 @@ dashboard, farm and batch pages, PDFs and labels — is open to every role, and 
 page (`/bag/:id`) needs no login at all.
 
 ## For developers
+`A walkthrough for presenting the app is in docs/DEMO.md`
 
 ### Local setup
 
@@ -159,6 +161,7 @@ Adds demo farms, screens them against Earth Engine, and bundles some into demo s
 **Tests:**
 ```bash
 cd backend && source .venv/bin/activate && python -m pytest -v
+cd frontend && npm test
 ```
 Never touches the real database or calls Earth Engine — `tests/conftest.py` points the app at a
 throwaway temporary database and mocks the Earth Engine call.
@@ -205,6 +208,7 @@ docker-compose.yml runs both halves in containers
 | `HANSEN_ASSET` | Which version of the Hansen Global Forest Change dataset to use |
 | `CUTOFF_YEAR` | The EUDR deforestation cutoff year (2020) |
 | `FRONTEND_URL` | The frontend's address, used to build QR codes and links in PDFs |
+| `YIELD_KG_PER_HA` | Estimated cocoa yield per hectare per season, used for mass-balance capacity (default 600) |
 
 Docker needs none of these set — `backend/.env.example` (committed) supplies working defaults;
 create `backend/.env` only to change something, such as your own `GEE_PROJECT`.
@@ -220,24 +224,6 @@ create `backend/.env` only to change something, such as your own `GEE_PROJECT`.
 
 **Low** < 30, **Medium** 30–59, **High** 60+. Any detected loss ≥ 0.1 ha is automatically at
 least Medium. Anything that isn't Low, or where the data was inconclusive, goes to review.
-
-## Demo script (≈6 min)
-
-Re-seed right before recording (`python -m app.seed --reset --verify`) so the numbers match. If
-Earth Engine isn't available, say up front that the badge reads MOCK and the results are simulated.
-
-| Time | Beat | What to say / do |
-| --- | --- | --- |
-| 0:00 | Login | Open `http://localhost:5173`. *"A deforestation-free traceability platform for cocoa. Login is a role picker, so we can jump straight into each part."* Pick **Brand admin**. |
-| 0:20 | Portfolio | Point at the KPI cards and distribution bar. *"Every farm is screened against satellite data and scored 0–100. Eight farms, two need attention."* Scroll to **Risk overview map**: *"Same portfolio on the map — green low, yellow medium, red high. Click a plot to open it; the map follows the filter in the table, so filtering to High isolates exactly the risky plots."* |
-| 1:10 | Bulk screening | Click **Run bulk screening**, keep the unscreened farms selected, start. *"Field teams register farms faster than they can be checked one by one. This runs the satellite check in the background, three at a time, with progress, ETA and per-farm results — and closing the window doesn't cancel the job."* Let it finish, point at the Low/Medium/High summary. |
-| 2:10 | Review queue | Open a flagged farm, show its evidence PDF, then clear or confirm it. *"Anything not Low goes to manual review; both decisions stay permanently on record."* |
-| 2:50 | Batch + DDS | Go to **Batches** → `BATCH-2026-001`. *"Verified farms are bundled into a shipment; each contribution is capped at the farm's seasonal yield, and over-capacity batches go to the admin for approval."* Click **Export DDS (JSON)**. *"This is the due-diligence statement a buyer or regulator receives: statement ID, commodity and quantity, each plot's geolocation, screening evidence, risk conclusion and mitigation steps, plus a SHA-256 hash over the whole document. It only issues while every farm is still Verified — if one regresses the export refuses with a 409."* |
-| 4:20 | Traceability | Open a bag's QR link. *"Anyone downstream scans a bag and sees its verdict — no login, no farmer names, just the evidence."* Then show the buyer-facing shipment PDF. |
-| 5:10 | Close | *"That's the full chain: capture with consent, satellite screening, human review, shipment batching, and a due-diligence statement. It's a course MVP, so real authentication, hosting and direct TRACES submission are next."* |
-
-If the demo machine has no Docker, run the two dev servers from **For developers → Running it**
-instead and open `http://localhost:5173`.
 
 ## Contributing
 
@@ -261,10 +247,7 @@ in the farm list, the public bag page, or any PDF.
 consent before personal and location data is collected and shared, and that no more of it is
 shared downstream than necessary.
 
-**Who sees what:** internal pages (dashboard, farm/batch detail) show the full farmer name,
-village and consent status. The public bag page and the buyer-facing shipment PDF show only the
-farm code, name, region, status and the farmer's **initials** — never the full name, village or
-consent record. The GPS boundary itself is still shown, since the EUDR requires it.
+**Who sees what:** internal pages (dashboard, farm/batch detail) show the full farmer name, village and consent status. The public bag page shows no farmer details; the buyer-facing PDFs and DDS show only the farmer's **initials** — never the full name, village or consent record. The GPS boundary itself is still shown, since the EUDR requires it.
 
 ## Troubleshooting
 
