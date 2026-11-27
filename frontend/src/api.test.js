@@ -27,6 +27,8 @@ test('4xx parks the draft as failed, network errors and 5xx keep retrying', asyn
   assert.equal(failed.name, 'Forbidden farm')
   assert.equal(failed.error, 'not permitted for your role')
 
+  // queuedAt is a ms timestamp and discardFailed matches on it; a fast CI box can queue both in the same ms.
+  await new Promise((r) => setTimeout(r, 2))
   queueFarm({ name: 'Bad geometry' })
   globalThis.fetch = respond(422)
   await flushOutbox()
