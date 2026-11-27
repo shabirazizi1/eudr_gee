@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import QRCode from 'qrcode'
 import { api } from '../api.js'
-import { getUser } from '../App.jsx'
+import { getUser, hasRole } from '../App.jsx'
 import RiskBadge from '../components/RiskBadge.jsx'
 import BatchMap from '../components/BatchMap.jsx'
 
@@ -111,7 +111,7 @@ export default function BatchDetail() {
           {batch.submission_note && (
             <p className="small" style={{ margin: '6px 0 0' }}>Justification: {batch.submission_note}</p>
           )}
-          {!isAdmin && (
+          {hasRole('warehouse', 'admin') && (
             <div style={{ marginTop: 8 }}>
               <button className="btn" disabled={busy} onClick={cancel}>Cancel request</button>
             </div>

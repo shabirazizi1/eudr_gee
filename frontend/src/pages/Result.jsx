@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { api } from '../api.js'
-import { getUser } from '../App.jsx'
+import { getUser, hasRole } from '../App.jsx'
 import FarmMap from '../components/FarmMap.jsx'
 import RiskBadge from '../components/RiskBadge.jsx'
 
@@ -30,7 +30,7 @@ function ReviewPanel({ farm, isAdmin, onReviewed }) {
     setError(''); setBusy(true)
     try {
       const updated = await api.reviewFarm(farm.id, {
-        decision, reason, note: note.trim(), reviewer_name: getUser()?.name || '',
+        decision, reason, note: note.trim(), reviewer_name: getUser()?.name || '', reviewer_role: getUser()?.role,
       })
       onReviewed(updated)
       setDecision(null); setNote('')
@@ -152,7 +152,7 @@ export default function Result() {
 
   const run = async () => {
     setBusy(true); setError('')
-    try { setFarm(await api.verify(id)) } catch (e) { setError(e.message) } finally { setBusy(false) }
+    try { setFarm(await api.verify(id, getUser()?.role)) } catch (e) { setError(e.message) } finally { setBusy(false) }
   }
 
   if (error && !farm) return <p className="bad-text">{error}</p>
@@ -172,8 +172,8 @@ export default function Result() {
           </p>
         </div>
         <div className="row">
-          <Link className="btn" to={`/farms/${farm.id}/remap`}>⬠ Remap boundary</Link>
-          <button className="btn" onClick={run} disabled={busy}>{busy ? 'Screening… (10–40 s)' : v ? '↻ Re-run check' : 'Run satellite check'}</button>
+          {hasRole('agent', 'admin') && <Link className="btn" to={`/farms/${farm.id}/remap`}>⬠ Remap boundary</Link>}
+          {hasRole('agent', 'admin') && <button className="btn" onClick={run} disabled={busy}>{busy ? 'Screening… (10–40 s)' : v ? '↻ Re-run check' : 'Run satellite check'}</button>}
           {v && <a className="btn primary" href={api.reportUrl(farm.id)}>⤓ Export evidence</a>}
         </div>
       </div>

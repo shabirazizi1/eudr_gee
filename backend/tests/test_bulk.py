@@ -10,6 +10,7 @@ from tests.conftest import DEFAULT_RESULT, make_polygon
 
 def _farm(name, **overrides):
     body = {
+        "captured_by_role": "agent",
         "name": name,
         "farmer_name": "Ama Mensah",
         "geometry": make_polygon(),
@@ -129,7 +130,7 @@ def test_bulk_one_farm_failing_does_not_sink_the_job(client, monkeypatch):
 def test_bulk_can_rescreen_an_already_screened_farm(client, mock_screen):
     """PR #20 review: re-running a screened farm must stay possible."""
     fid = client.post("/api/farms", json=_farm("Rescreen me")).json()["id"]
-    assert client.post(f"/api/farms/{fid}/verify", json={"agent_name": "Test Agent"}).status_code == 200
+    assert client.post(f"/api/farms/{fid}/verify", params={"role": "agent"}, json={"agent_name": "Test Agent"}).status_code == 200
     assert client.get(f"/api/farms/{fid}").json()["status"] == "Verified"
 
     done = _wait(client, _start(client, [fid]).json()["job_id"])

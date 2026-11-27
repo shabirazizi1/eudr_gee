@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { api } from '../api.js'
-import { getUser } from '../App.jsx'
+import { getUser, hasRole } from '../App.jsx'
 import RiskBadge from '../components/RiskBadge.jsx'
 
 // HLR-02 / DEL-03 / DEL-06 – bundle verified farms into a traceable shipment batch
@@ -91,9 +91,11 @@ export default function Batches() {
           <h1>Shipment batches.</h1>
           <p className="muted">Bundle verified farms into a traceable shipment for your buyer.</p>
         </div>
-        <button className="btn primary" onClick={() => setCreating((c) => !c)}>
-          {creating ? 'Cancel' : '+ New batch'}
-        </button>
+        {hasRole('warehouse') && (
+          <button className="btn primary" onClick={() => setCreating((c) => !c)}>
+            {creating ? 'Cancel' : '+ New batch'}
+          </button>
+        )}
       </div>
 
       {creating && (

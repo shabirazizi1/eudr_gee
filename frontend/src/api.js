@@ -1,6 +1,7 @@
 // Thin API client + offline outbox (F2: drafts saved locally, synced when online)
 
 const OUTBOX_KEY = 'eudr_outbox'
+const FAILED_KEY = 'eudr_outbox_failed' // 4xx'd drafts, kept until the user discards them
 
 async function request(path, options = {}) {
   const res = await fetch(`/api${path}`, {
@@ -26,7 +27,7 @@ export const api = {
   farms: (season) => request(season ? `/farms?season=${encodeURIComponent(season)}` : '/farms'),
   farm: (id) => request(`/farms/${id}`),
   createFarm: (body) => request('/farms', { method: 'POST', body: JSON.stringify(body) }),
-  verify: (id) => request(`/farms/${id}/verify`, { method: 'POST' }),
+  verify: (id, role) => request(`/farms/${id}/verify?role=${encodeURIComponent(role || '')}`, { method: 'POST' }),
   remapFarm: (id, body) => request(`/farms/${id}/remap`, { method: 'POST', body: JSON.stringify(body) }),
   boundaryVersions: (id) => request(`/farms/${id}/boundary_versions`),
   reviewFarm: (id, body) => request(`/farms/${id}/review`, { method: 'POST', body: JSON.stringify(body) }),
@@ -53,11 +54,21 @@ export const api = {
 
 // ---- offline outbox -------------------------------------------------------
 
-function readOutbox() {
-  try { return JSON.parse(localStorage.getItem(OUTBOX_KEY)) || [] } catch { return [] }
+function readList(key) {
+  try { return JSON.parse(localStorage.getItem(key)) || [] } catch { return [] }
 }
-function writeOutbox(items) {
-  try { localStorage.setItem(OUTBOX_KEY, JSON.stringify(items)) } catch { /* ignore */ }
+function writeList(key, items) {
+  try { localStorage.setItem(key, JSON.stringify(items)) } catch { /* ignore */ }
+}
+const readOutbox = () => readList(OUTBOX_KEY)
+const writeOutbox = (items) => writeList(OUTBOX_KEY, items)
+
+export function failedOutbox() {
+  return readList(FAILED_KEY)
+}
+
+export function discardFailed(queuedAt) {
+  writeList(FAILED_KEY, failedOutbox().filter((f) => f.queuedAt !== queuedAt))
 }
 
 export function outboxCount() {
@@ -73,6 +84,7 @@ export async function flushOutbox() {
   const items = readOutbox()
   if (!items.length || !navigator.onLine) return 0
   const left = []
+  const failed = []
   let synced = 0
   for (const item of items) {
     try {
@@ -80,10 +92,16 @@ export async function flushOutbox() {
       await api.createFarm(body)
       synced++
     } catch (e) {
-      // 422 = invalid geometry: drop it; anything else: keep for later
-      if (e.status !== 422) left.push(item)
+      // 4xx (bad geometry, wrong role...) won't succeed on retry: park it where the user sees it.
+      // Network errors (no status) and 5xx stay queued and are retried.
+      if (e.status >= 400 && e.status < 500) {
+        failed.push({ ...item, status: e.status, error: e.status === 403 ? 'not permitted for your role' : e.message })
+      } else {
+        left.push(item)
+      }
     }
   }
   writeOutbox(left)
+  if (failed.length) writeList(FAILED_KEY, [...failedOutbox(), ...failed])
   return synced
 }

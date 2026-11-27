@@ -322,6 +322,7 @@ export default function Capture() {
     const body = {
       geometry,
       captured_by: getUser()?.name || '',
+      captured_by_role: getUser()?.role,
       capture_method: captureMethod,
       gps_accuracy_m: avgAccuracy !== null ? Math.round(avgAccuracy * 10) / 10 : null,
       flagged_points: flaggedCount,
@@ -333,7 +334,7 @@ export default function Capture() {
       await api.remapFarm(remapFarmId, body)
       if (runCheck) {
         setBusy('Running satellite check (can take 10–40 s)…')
-        await api.verify(remapFarmId)
+        await api.verify(remapFarmId, getUser()?.role)
       }
       nav(`/farms/${remapFarmId}`)
     } catch (e) {
@@ -348,6 +349,7 @@ export default function Capture() {
     if (isRemap) { await submitRemap(runCheck); return }
     const body = {
       ...form,
+      captured_by_role: getUser()?.role,
       harvest_date: form.harvest_date || null,
       geometry,
       captured_by: getUser()?.name || '',
@@ -371,7 +373,7 @@ export default function Capture() {
       clearDraft()
       if (runCheck) {
         setBusy('Running satellite check (can take 10–40 s)…')
-        await api.verify(farm.id)
+        await api.verify(farm.id, getUser()?.role)
       }
       nav(`/farms/${farm.id}`)
     } catch (e) {

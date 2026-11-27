@@ -1,6 +1,7 @@
 from tests.conftest import make_polygon
 
 FARM = {
+    "captured_by_role": "agent",
     "name": "Adom Cocoa Farm",
     "farmer_name": "Ama Mensah",
     "village": "Asankrangwa",
@@ -15,8 +16,8 @@ FARM = {
 
 def _verified_batch(client, bags=4, kg_per_bag=60.0):
     farm = client.post("/api/farms", json=FARM).json()
-    client.post(f"/api/farms/{farm['id']}/verify")
-    batch = client.post("/api/batches", json={
+    client.post(f"/api/farms/{farm['id']}/verify", params={"role": "agent"})
+    batch = client.post("/api/batches", json={"created_by_role": "warehouse",
         "contributions": [{"farm_id": farm["id"], "bags": bags, "kg_per_bag": kg_per_bag}],
     }).json()
     return farm, batch
@@ -57,8 +58,8 @@ def test_dds_export_contains_statement_fields(client, mock_screen):
 def test_dds_pending_batch_returns_400(client, mock_screen):
     """Pending approval means no bags exist yet, so there is nothing to make a statement about."""
     farm = client.post("/api/farms", json=FARM).json()
-    client.post(f"/api/farms/{farm['id']}/verify")
-    b = client.post("/api/batches", json={
+    client.post(f"/api/farms/{farm['id']}/verify", params={"role": "agent"})
+    b = client.post("/api/batches", json={"created_by_role": "warehouse",
         "contributions": [{"farm_id": farm["id"], "bags": 100, "kg_per_bag": 64.0}],
         "justification_note": "Second harvest agreed with the cooperative",
     })
@@ -71,23 +72,23 @@ def test_dds_reports_the_frozen_verification_not_the_latest_rerun(client, mock_s
     """PR #20 review: a re-run after batching must not change the statement's score."""
     mock_screen(loss_ha=0.3)  # real loss -> Under review, then cleared by the Brand admin
     farm = client.post("/api/farms", json=FARM).json()
-    assert client.post(f"/api/farms/{farm['id']}/verify").json()["status"] == "Under review"
+    assert client.post(f"/api/farms/{farm['id']}/verify", params={"role": "agent"}).json()["status"] == "Under review"
     rr = client.post(f"/api/farms/{farm['id']}/review", json={
         "decision": "clear", "reason": "Cloud cover", "note": "Checked on site",
-        "reviewer_name": "Nadia Owusu"})
+        "reviewer_name": "Nadia Owusu", "reviewer_role": "admin"})
     assert rr.status_code == 200, rr.text
 
     frozen = client.get(f"/api/farms/{farm['id']}").json()
     frozen_level, frozen_score = frozen["risk_level"], frozen["risk_score"]
     assert frozen_level != "Low"
 
-    batch = client.post("/api/batches", json={
+    batch = client.post("/api/batches", json={"created_by_role": "warehouse",
         "contributions": [{"farm_id": farm["id"], "bags": 4, "kg_per_bag": 60.0}]}).json()
     assert batch["status"] == "Approved"
 
     # A later re-run comes back clean: the farm is still batchable, so the export succeeds...
     mock_screen(loss_ha=0.0)
-    assert client.post(f"/api/farms/{farm['id']}/verify").json()["status"] == "Verified"
+    assert client.post(f"/api/farms/{farm['id']}/verify", params={"role": "agent"}).json()["status"] == "Verified"
     assert client.get(f"/api/farms/{farm['id']}").json()["risk_level"] == "Low"
 
     doc = client.get(f"/api/batches/{batch['id']}/dds").json()
@@ -102,7 +103,7 @@ def test_dds_is_blocked_when_a_farm_regresses(client, mock_screen):
 
     # Re-screening finds heavy loss: the farm drops out of "Verified" after batching.
     mock_screen(loss_ha=0.6)
-    assert client.post(f"/api/farms/{farm['id']}/verify").json()["status"] == "Under review"
+    assert client.post(f"/api/farms/{farm['id']}/verify", params={"role": "agent"}).json()["status"] == "Under review"
 
     r = client.get(f"/api/batches/{batch['id']}/dds")
     assert r.status_code == 409
