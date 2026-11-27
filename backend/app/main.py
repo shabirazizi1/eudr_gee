@@ -5,16 +5,19 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
-from . import config, geo, gee_service, scoring
+from . import bulk_verify, config, geo, gee_service, scoring
 from .db import get_session, init_db
+from .dds import build_dds
 from .models import Bag, Batch, BatchContribution, BatchEvent, BoundaryVersion, Farm, Review, Verification
 from .report import COMMODITY, build_bag_labels_pdf, build_batch_pdf, build_pdf
+from .geo import display_geometry
+from .screening import screen_farm
 
 
 @asynccontextmanager
@@ -149,17 +152,6 @@ def geometry_fields(geometry: dict, declared_area_ha: Optional[float] = None) ->
         "vertices": geo.vertex_count(geometry),
         "declared_area_ha": None,
     }
-
-
-def display_geometry(geometry_str: str, declared_area_ha: Optional[float]) -> dict:
-    """The stored geometry is a true GeoJSON Point for a declared-area capture (issue #5) --
-    the due-diligence export needs that real Point. Everything else that expects a Polygon shape
-    (maps, PDFs, Earth Engine screening) gets this buffered-circle stand-in instead."""
-    raw = json.loads(geometry_str)
-    if raw.get("type") == "Point":
-        lon, lat = raw["coordinates"]
-        return geo.point_buffer_polygon(lon, lat, declared_area_ha or 0)
-    return raw
 
 
 def is_batchable(farm: Farm) -> bool:
@@ -623,33 +615,13 @@ def verify_farm(farm_id: int, role: Optional[str] = None, session: Session = Dep
         raise HTTPException(404, "Farm not found")
     require_role(role, FIELD_ROLES, "Only a field agent or Brand admin can run a satellite check.")
     # A Point capture (issue #5, EUDR <= 4 ha) is screened as a circle buffered to the declared
-    # area, since Hansen/NDVI/WDPA need an actual region, not a single pixel.
-    screening_geometry = display_geometry(farm.geometry, farm.declared_area_ha)
+    # area -- screen_farm() owns that, and bulk screening uses the same helper (PR #20 review).
+    current_version = latest_boundary_version(session, farm.id)
     try:
-        result = gee_service.screen(screening_geometry, farm.area_ha)
+        v = screen_farm(session, farm, current_version.id if current_version else None)
     except Exception as e:  # noqa: BLE001
         raise HTTPException(502, f"Satellite screening failed: {e}")
-    s = scoring.score(result)
-    result.update({"flags": s["flags"] + geo.sanity_flags(farm.area_ha),
-                   "breakdown": s["breakdown"]})
-
-    current_version = latest_boundary_version(session, farm.id)
-    v = Verification(
-        farm_id=farm.id,
-        boundary_version_id=current_version.id if current_version else None,
-        run_id=f"GEE-{farm.code.split('-')[1]}-{uuid.uuid4().hex[:4].upper()}",
-        source=result["source"],
-        score=s["score"],
-        level=s["level"],
-        result_json=json.dumps(result),
-    )
-    farm.risk_score, farm.risk_level, farm.status = s["score"], s["level"], s["status"]
-    farm.last_screened = datetime.now(timezone.utc)
-    session.add(v)
-    session.add(farm)
-    session.commit()
     session.refresh(farm)
-    session.refresh(v)
     return farm_out(farm, v, farm_reviews(session, farm.id), session=session)
 
 
@@ -932,6 +904,58 @@ def batch_report(batch_id: int, session: Session = Depends(get_session)):
         "Content-Disposition": f'attachment; filename="shipment_{batch.code}.pdf"'})
 
 
+@app.get("/api/batches/{batch_id}/dds")
+def batch_dds(request: Request, batch_id: int, session: Session = Depends(get_session)):
+    """EUDR due-diligence statement as a TRACES-style JSON download. Uses the minimized
+    (public) farm payload -- initials instead of farmer names -- and the frozen boundary
+    version of each contribution, same as the other buyer-facing exports."""
+    batch = session.get(Batch, batch_id)
+    if not batch:
+        raise HTTPException(404, "Batch not found")
+    if batch.status != "Approved":
+        raise HTTPException(400, "This batch is pending approval -- exports are unavailable until it's approved.")
+    data = batch_out(session, batch, public=True)
+    blocked = [c["farm"]["name"] for c in data["contributions"]
+               if c["farm"] and c["farm"]["status"] not in BATCHABLE_STATUSES]
+    if blocked:
+        raise HTTPException(409, "A DDS cannot be issued while these farms are not Verified: "
+                            + ", ".join(blocked))
+    contribs = session.exec(
+        select(BatchContribution).where(BatchContribution.batch_id == batch_id)).all()
+    features = {}
+    for c in contribs:
+        farm = session.get(Farm, c.farm_id)
+        if farm:
+            features[farm.code] = geolocation_feature(farm, c.boundary_version_id, session)
+    # Freeze the screening evidence at batch-creation time (PR #20 review): batch_out pins the
+    # boundary VERSION, but a re-run of that same version adds a newer verification -- the
+    # statement must keep the run that was current when the farm joined the batch.
+    for item in data["contributions"]:
+        farm_payload = item.get("farm")
+        if not farm_payload:
+            continue
+        frozen = session.exec(
+            select(Verification)
+            .where(Verification.farm_id == farm_payload["id"])
+            .where(Verification.created_at <= batch.created_at)
+            .order_by(Verification.created_at.desc())
+        ).first()
+        if frozen:
+            farm_payload["verification"] = {
+                "run_id": frozen.run_id,
+                "created_at": frozen.created_at.isoformat(),
+                "source": frozen.source,
+                "score": frozen.score,
+                "level": frozen.level,
+                **json.loads(frozen.result_json),
+            }
+
+    payload = build_dds(data, features, base_url=str(request.base_url))
+    body = json.dumps(payload, indent=2, ensure_ascii=False)
+    return Response(body, media_type="application/json", headers={
+        "Content-Disposition": f'attachment; filename="DDS_{batch.code}.json"'})
+
+
 def geolocation_feature(farm: Farm, boundary_version_id: Optional[int], session: Session) -> dict:
     """One EUDR due-diligence geolocation feature for a farm: a true Point (<= 4 ha, issue #5)
     or Polygon -- never the buffered-circle stand-in `display_geometry` returns -- with
@@ -1015,3 +1039,38 @@ def get_bag(bag_id: str, session: Session = Depends(get_session)):
     if not bag:
         raise HTTPException(404, "Bag not found")
     return bag_out(session, bag)
+
+
+# ---------------------------------------------------------------- bulk screening (F2.b)
+
+class BulkStartBody(BaseModel):
+    farm_ids: list[int]
+    triggered_by: str = ""
+    by_role: Optional[str] = None
+
+
+@app.post("/api/bulk/verify")
+def start_bulk_verify(body: BulkStartBody):
+    # Same server-enforced rule as batch approval: the UI hides the button, the API still checks.
+    if body.by_role != "admin":
+        raise HTTPException(403, "Only a Brand admin can run bulk screening.")
+    try:
+        return bulk_verify.start_job(body.farm_ids, body.triggered_by)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+
+
+@app.get("/api/bulk/{job_id}")
+def get_bulk_job(job_id: str):
+    job = bulk_verify.get_job(job_id)
+    if job is None:
+        raise HTTPException(404, "Bulk job not found")
+    return job
+
+
+@app.get("/api/bulk/{job_id}/summary")
+def get_bulk_summary(job_id: str):
+    job = bulk_verify.get_job(job_id)
+    if job is None:
+        raise HTTPException(404, "Bulk job not found")
+    return bulk_verify.summary_of(job)

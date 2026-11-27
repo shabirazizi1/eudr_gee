@@ -1,8 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { api } from '../api.js'
 import { getUser, hasRole } from '../App.jsx'
 import RiskBadge from '../components/RiskBadge.jsx'
+import BulkVerifyModal from '../components/BulkVerifyModal.jsx'
+// import { getUser } from '../App.jsx'
+import RiskMap from '../components/RiskMap.jsx'
 
 // F5 – Brand admin evidence & compliance dashboard (Figure 4)
 const NEXT_ACTION = {
@@ -22,6 +25,9 @@ export default function Dashboard({ listOnly = false }) {
   const [query, setQuery] = useState('')
   const [running, setRunning] = useState(null)
   const [error, setError] = useState('')
+  const [bulkOpen, setBulkOpen] = useState(false)
+  // The API enforces this too (403) -- hiding the button is just the honest UI (PR #20 review).
+  const isAdmin = getUser()?.role === 'admin'
 
   const load = () => Promise.all([api.summary(), api.farms()])
     .then(([s, f]) => { setSummary(s); setFarms(f) })
@@ -39,8 +45,10 @@ export default function Dashboard({ listOnly = false }) {
     if (filter === 'Review queue') return f.status === 'Under review'
     return f.risk_level === filter
   }
-  const shown = farms.filter((f) =>
-    matchesFilter(f) && `${f.name} ${f.farmer_name} ${f.code}`.toLowerCase().includes(query.toLowerCase()))
+  const shown = useMemo(() => farms.filter((f) =>
+    matchesFilter(f) && `${f.name} ${f.farmer_name} ${f.code}`.toLowerCase().includes(query.toLowerCase())),
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  [farms, filter, query])
 
   const d = summary?.distribution || { Low: 0, Medium: 0, High: 0 }
   const total = (d.Low + d.Medium + d.High) || 1
@@ -53,7 +61,10 @@ export default function Dashboard({ listOnly = false }) {
           <h1>{listOnly ? 'Satellite verification queue.' : 'Know your cocoa. Know your impact.'}</h1>
           <p className="muted">Your sourcing portfolio at a glance · 2026 / 27 harvest · Ghana</p>
         </div>
-        {hasRole('agent', 'admin') && <button className="btn primary" onClick={() => nav('/capture')}>+ Add farm</button>}
+        <div className="row gap">
+          {hasRole('agent', 'admin') && <button className="btn primary" onClick={() => nav('/capture')}>+ Add farm</button>}
+          {isAdmin && <button className="btn" onClick={() => setBulkOpen(true)}>⚡ Run bulk screening</button>}
+        </div>
       </div>
       {error && <p className="bad-text">{error}</p>}
 
@@ -90,6 +101,16 @@ export default function Dashboard({ listOnly = false }) {
             </div>
           </div>
         </>
+      )}
+
+      {!listOnly && (
+        <section className="card">
+          <div className="card-head">
+            <b>Risk overview map <span className="pill">{shown.length} shown</span></b>
+            <small className="muted">Colour = satellite risk · click a plot to open the farm</small>
+          </div>
+          <RiskMap farms={shown} height={400} />
+        </section>
       )}
 
       <section className="card">
@@ -140,6 +161,15 @@ export default function Dashboard({ listOnly = false }) {
         </table>
       </section>
       <p className="disclaimer small">Risk scores are decision-support indicators, not legal certification.</p>
+
+      {/* bulk verify modal: the job outlives the modal, so a finished job just refreshes the list */}
+      {bulkOpen && (
+        <BulkVerifyModal
+          farms={farms}
+          onClose={() => setBulkOpen(false)}
+          onDone={() => load()}
+        />
+      )}
     </div>
   )
 }

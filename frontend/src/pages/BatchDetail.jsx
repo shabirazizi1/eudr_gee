@@ -94,6 +94,7 @@ export default function BatchDetail() {
         {approved && (
           <div className="row gap page-actions">
             <a className="btn" href={api.bagLabelsUrl(batch.id)}>🏷 Print bag labels</a>
+            <a className="btn" href={api.ddsUrl(batch.id)}>⤓ Export DDS (JSON)</a>
             <a className="btn" href={api.geolocationUrl(batch.id)}>⬠ Export EUDR geolocation (GeoJSON)</a>
             <a className="btn primary" href={api.batchReportUrl(batch.id)}>⤓ Export shipment compliance package</a>
           </div>
