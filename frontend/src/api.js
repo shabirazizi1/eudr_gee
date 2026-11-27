@@ -38,9 +38,17 @@ export const api = {
   rejectBatch: (id, body) => request(`/batches/${id}/reject`, { method: 'POST', body: JSON.stringify(body) }),
   cancelBatch: (id, body) => request(`/batches/${id}/cancel`, { method: 'POST', body: JSON.stringify(body) }),
   batchReportUrl: (id) => `/api/batches/${id}/report.pdf`,
+  ddsUrl: (id) => `/api/batches/${id}/dds`,
   geolocationUrl: (id) => `/api/batches/${id}/geolocation.geojson`,
   bagLabelsUrl: (id) => `/api/batches/${id}/bag_labels.pdf`,
   bag: (bagId) => request(`/bags/${bagId}`),
+  // ---- bulk verify (F2.b) ----
+  startBulkVerify: (farmIds, triggeredBy = '', byRole = '') => request('/bulk/verify', {
+    method: 'POST',
+    body: JSON.stringify({ farm_ids: farmIds, triggered_by: triggeredBy, by_role: byRole }),
+  }),
+  bulkJob: (jobId) => request(`/bulk/${jobId}`),
+  bulkSummary: (jobId) => request(`/bulk/${jobId}/summary`),
 }
 
 // ---- offline outbox -------------------------------------------------------

@@ -54,13 +54,18 @@ sync once back online. Every boundary edit keeps the old version — nothing is 
 **Brand admin** — every farm is screened against satellite data for tree-cover loss, vegetation
 change and protected-area overlap, producing a 0–100 risk score. Flagged farms go to a review
 queue: clear a false positive or confirm and exclude it, permanently on record. A dashboard shows
-portfolio KPIs and risk distribution, plus a queue of batches awaiting approval.
+portfolio KPIs and risk distribution, plus a queue of batches awaiting approval. An **overview
+map** colours every farm by risk and follows the same filter as the table, and **bulk screening**
+checks many unscreened farms in one background job — with live progress, ETA and per-farm results
+— instead of clicking each farm one at a time.**
 
 **Warehouse operator** — bundles verified farms into a shipment batch for a buyer. Each farm has
 a maximum it can ship per season (area × estimated yield); a batch that would exceed it is
 submitted for a Brand admin's approval (with a note) instead of being blocked, and can be
 cancelled before it's decided. Once approved, every bag gets a unique QR-coded ID, printable as
-sticker labels, plus one-click PDF/GeoJSON exports.
+sticker labels, plus one-click PDF/GeoJSON exports and a **due-diligence statement (DDS) as
+JSON** — commodity, quantities, plot geolocations, screening evidence, the risk conclusion and a
+SHA-256 integrity hash, ready to hand to a buyer or auditor.
 
 **Buyer & the public** — anyone can scan a bag's QR code (no login) to see its deforestation-free
 verdict. The buyer-facing shipment PDF shows only what they need, with no farmer names.
@@ -78,8 +83,8 @@ Batches, Account) so the whole workflow works in the field.
    queue to be cleared or excluded.
 4. A **warehouse operator** bundles Verified farms into a shipment batch. A contribution
    exceeding a farm's remaining seasonal capacity is submitted for the admin's approval instead.
-5. Once approved, the platform mints a QR-coded ID per bag and generates the evidence PDFs and
-   the EUDR geolocation export.
+5. Once approved, the platform mints a QR-coded ID per bag and generates the evidence PDFs, the
+   EUDR geolocation export and a JSON due-diligence statement (DDS) covering the whole batch.
 6. Anyone downstream — the **buyer**, a customs officer, an auditor — scans a bag's QR code and
    sees its verdict, no login required.
 
@@ -148,12 +153,24 @@ cd backend && source .venv/bin/activate && python -m pytest -v
 Never touches the real database or calls Earth Engine — `tests/conftest.py` points the app at a
 throwaway temporary database and mocks the Earth Engine call.
 
+### Bulk screening & DDS endpoints
+
+| Method & path | What it does |
+| --- | --- |
+| `POST /api/bulk/verify` | Start a background screening job for a list of farm IDs — Brand admin only (`by_role: "admin"`, otherwise 403); already-screened farms can be re-run |
+| `GET /api/bulk/{job_id}` | Job status, progress, ETA and per-farm results |
+| `GET /api/bulk/{job_id}/summary` | Roll-up: counts per risk level plus flagged farms |
+| `GET /api/batches/{id}/dds` | EUDR due-diligence statement as JSON (Approved batches only) |
+
 ### Project structure
 
 ```
 backend/app/
   main.py          API routes
   models.py        database tables (Farm, Batch, Bag, Review, BatchEvent, ...)
+  bulk_verify.py   background bulk screening (thread pool, in-process job progress)
+  screening.py     shared farm-screening logic used by /verify and by bulk jobs
+  dds.py           builds the EUDR due-diligence statement (JSON) from a batch
   gee_service.py   Earth Engine satellite screening
   scoring.py       turns screening results into a 0-100 risk score
   geo.py           polygon area/validation math
@@ -193,6 +210,24 @@ create `backend/.env` only to change something, such as your own `GEE_PROJECT`.
 
 **Low** < 30, **Medium** 30–59, **High** 60+. Any detected loss ≥ 0.1 ha is automatically at
 least Medium. Anything that isn't Low, or where the data was inconclusive, goes to review.
+
+## Demo script (≈6 min)
+
+Re-seed right before recording (`python -m app.seed --reset --verify`) so the numbers match. If
+Earth Engine isn't available, say up front that the badge reads MOCK and the results are simulated.
+
+| Time | Beat | What to say / do |
+| --- | --- | --- |
+| 0:00 | Login | Open `http://localhost:5173`. *"A deforestation-free traceability platform for cocoa. Login is a role picker, so we can jump straight into each part."* Pick **Brand admin**. |
+| 0:20 | Portfolio | Point at the KPI cards and distribution bar. *"Every farm is screened against satellite data and scored 0–100. Eight farms, two need attention."* Scroll to **Risk overview map**: *"Same portfolio on the map — green low, yellow medium, red high. Click a plot to open it; the map follows the filter in the table, so filtering to High isolates exactly the risky plots."* |
+| 1:10 | Bulk screening | Click **Run bulk screening**, keep the unscreened farms selected, start. *"Field teams register farms faster than they can be checked one by one. This runs the satellite check in the background, three at a time, with progress, ETA and per-farm results — and closing the window doesn't cancel the job."* Let it finish, point at the Low/Medium/High summary. |
+| 2:10 | Review queue | Open a flagged farm, show its evidence PDF, then clear or confirm it. *"Anything not Low goes to manual review; both decisions stay permanently on record."* |
+| 2:50 | Batch + DDS | Go to **Batches** → `BATCH-2026-001`. *"Verified farms are bundled into a shipment; each contribution is capped at the farm's seasonal yield, and over-capacity batches go to the admin for approval."* Click **Export DDS (JSON)**. *"This is the due-diligence statement a buyer or regulator receives: statement ID, commodity and quantity, each plot's geolocation, screening evidence, risk conclusion and mitigation steps, plus a SHA-256 hash over the whole document. It only issues while every farm is still Verified — if one regresses the export refuses with a 409."* |
+| 4:20 | Traceability | Open a bag's QR link. *"Anyone downstream scans a bag and sees its verdict — no login, no farmer names, just the evidence."* Then show the buyer-facing shipment PDF. |
+| 5:10 | Close | *"That's the full chain: capture with consent, satellite screening, human review, shipment batching, and a due-diligence statement. It's a course MVP, so real authentication, hosting and direct TRACES submission are next."* |
+
+If the demo machine has no Docker, run the two dev servers from **For developers → Running it**
+instead and open `http://localhost:5173`.
 
 ## Contributing
 
@@ -242,8 +277,8 @@ This is a course MVP, missing things a production version would need:
 - **Real authentication** — login is a role picker, with no password check or session security.
 - **Cloud hosting** — currently runs only on a laptop or in local Docker containers.
 - **A full offline mobile app** — drafts save offline, but it isn't an installable native app.
-- **Direct submission to the EU's TRACES system** — the GeoJSON export is EUDR-shaped but not
-  wired up to file a due-diligence statement automatically.
+- **Direct submission to the EU's TRACES system** — the GeoJSON and JSON due-diligence statement
+  are EUDR-shaped but neither is wired up to file automatically.
 - **Near-real-time deforestation alerts** — screening is on demand, not ongoing monitoring.
 - **Other commodities** — built around cocoa; other EUDR commodities (coffee, palm oil, rubber,
   timber, soy, cattle) aren't supported yet.
